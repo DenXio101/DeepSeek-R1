@@ -12,7 +12,7 @@ const KEEP_ES_AFTER = ["s", "x", "z", "ch", "sh", "ce", "ge", "se", "ze"];
 const HIATUS = new Set(["ia", "io", "iu", "eo", "ua", "uo", "oa"]);
 const NO_HIATUS_CONTEXT = ["tion", "sion", "cian", "cious", "tial", "geous", "cial", "tious", "cean", "peop"];
 const SUFFIX_RE = /(ing|ed|est|ers|er|en|ly|y)$/;
-const CJK_RE = /[぀-ヿ㐀-䶿一-鿿가-힯豈-﫿]/;
+const CJK_RE = /\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Hangul}/u;
 const LETTER_RE = /\p{L}|\p{N}/u;
 
 function lowerChar(c: string): string {

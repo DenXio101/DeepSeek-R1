@@ -56,7 +56,7 @@ export function sniffKind(name: string, text: string): "json" | "lrc" | "text" {
   const ext = name.toLowerCase().split(".").pop() ?? "";
   if (ext === "json") return "json";
   if (ext === "lrc") return "lrc";
-  const t = text.replace(/^﻿/, "").trimStart();
+  const t = (text.charCodeAt(0) === 0xfeff ? text.slice(1) : text).trimStart();
   if (t.startsWith("{")) return "json";
   if (/\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\]/.test(t)) return "lrc";
   return "text";
