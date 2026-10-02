@@ -1,215 +1,214 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import Karaoke from "./Karaoke";
-import Logo from "./Logo";
 import demoTrack from "./demoTrack";
 import type { Track } from "./lyrics";
+import { normalizeTrack } from "./model/normalize";
+import { buildTimeline } from "./model/timeline";
+import { usePlaybackEngine } from "./engine/usePlaybackEngine";
+import { useKaraokeSession } from "./engine/useKaraokeSession";
+import { useIsLandscape } from "./hooks/useOrientation";
+import Header, { type Theme } from "./components/Header";
+import ControlsDock from "./components/ControlsDock";
+import MediaElement, { type MediaKind } from "./components/MediaElement";
+import LibraryButtons from "./components/LibraryButtons";
+import SyncStudio from "./components/SyncStudio/SyncStudio";
+import { initStudio, studioReducer } from "./components/SyncStudio/studioReducer";
+import { IconSparkle, IconStudio } from "./components/Icons";
+import SpectrumCanvas from "./components/SpectrumCanvas";
+import { useAudioGraph } from "./engine/useAudioGraph";
+import { isIOS, useReducedMotion, type EffectsLevel } from "./hooks/useReducedMotion";
+import { PitchTracker } from "./engine/PitchTracker";
+import type { Difficulty } from "./engine/scoring";
+import PitchLane from "./components/PitchLane";
+import ScoreHud from "./components/ScoreHud";
+import GradeScreen from "./components/GradeScreen";
+import MicControls from "./components/MicControls";
+import ParticleLayer, { type StageFx } from "./components/ParticleLayer";
+import CountIn from "./components/CountIn";
+import SectionCard from "./components/SectionCard";
+import { useFullscreen } from "./hooks/useFullscreen";
+import { useIdleHide } from "./hooks/useIdleHide";
+import { useHotkeys } from "./hooks/useHotkeys";
+import { IconExitFullscreen, IconFullscreen } from "./components/Icons";
+import type { Point } from "./components/CueBall";
+import type { Voice } from "./lyrics";
+import { importLyricsText } from "./model/trackIO";
 import "./styles.css";
 
-type Theme = "dark" | "light";
-type MediaType = "none" | "audio" | "video";
-
-const DEMO_DURATION = 56;
+interface MediaState {
+  url: string;
+  kind: MediaKind;
+  name: string;
+}
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>("dark");
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [time, setTime] = useState(0);
-  const [duration, setDuration] = useState(DEMO_DURATION);
-  const [playbackRate, setPlaybackRate] = useState(1.0);
-  const [mediaType, setMediaType] = useState<MediaType>("none");
-  const [mediaUrl, setMediaUrl] = useState<string | null>(null);
-  const [track] = useState<Track>(demoTrack);
-  const [isLandscape, setIsLandscape] = useState(false);
+  const [track, setTrack] = useState<Track>(() => normalizeTrack(demoTrack));
+  const [notice, setNotice] = useState<{ kind: "error" | "info"; text: string } | null>(null);
+  const [mode, setMode] = useState<"perform" | "studio">("perform");
+  const [studio, dispatchStudio] = useReducer(studioReducer, undefined, initStudio);
+  const [previewTrack, setPreviewTrack] = useState<Track | null>(null);
+  const [visualizer, setVisualizer] = useState<boolean>(() => !isIOS());
+  const [effects, setEffects] = useState<EffectsLevel>("auto");
+  const reducedMotion = useReducedMotion(effects);
+  const [difficulty, setDifficulty] = useState<Difficulty>("normal");
+  const [micLatencyMs, setMicLatencyMs] = useState(60);
+  const [gradeDismissed, setGradeDismissed] = useState(-1);
+  const fxRef = useRef<StageFx | null>(null);
+  const onPeak = useCallback((p: Point, voice: Voice) => fxRef.current?.emit(p, voice), []);
+  const fullscreen = useFullscreen();
+  const shownTrack = mode === "studio" && previewTrack ? previewTrack : track;
+  const [media, setMedia] = useState<MediaState | null>(null);
+  const isLandscape = useIsLandscape();
 
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const demoStartRef = useRef<number | null>(null);
-  const demoTimeRef = useRef<number>(0);
-  const rafRef = useRef<number>(0);
-  const fileUrlRef = useRef<string | null>(null);
-  const playbackRateRef = useRef(playbackRate);
-  const isPlayingRef = useRef(isPlaying);
+  const timeline = useMemo(() => buildTimeline(shownTrack), [shownTrack]);
+  const { engine, playback } = usePlaybackEngine();
+  const { graph, mic } = useAudioGraph();
+  const { session: sessionObj, state: session } = useKaraokeSession(engine, timeline);
+  const tracker = useMemo(() => new PitchTracker(graph), [graph]);
+  const micOn = mic.status === "on";
 
-  playbackRateRef.current = playbackRate;
-  isPlayingRef.current = isPlaying;
-
-  // Detect landscape
+  // mic → pitch tracker → session scoring
   useEffect(() => {
-    const check = () => setIsLandscape(window.innerWidth > window.innerHeight);
-    check();
-    window.addEventListener("resize", check);
-    window.addEventListener("orientationchange", check);
-    return () => {
-      window.removeEventListener("resize", check);
-      window.removeEventListener("orientationchange", check);
-    };
-  }, []);
-
-  // Demo clock RAF loop
-  const startDemoClock = useCallback(() => {
-    cancelAnimationFrame(rafRef.current);
-    const rate = playbackRateRef.current;
-    const baseTime = demoTimeRef.current;
-    demoStartRef.current = performance.now();
-
-    const tick = () => {
-      if (!isPlayingRef.current) return;
-      if (demoStartRef.current === null) return;
-      const elapsed = (performance.now() - demoStartRef.current) / 1000;
-      const t = baseTime + elapsed * rate;
-      const clamped = Math.min(t, DEMO_DURATION);
-      setTime(clamped);
-      if (clamped < DEMO_DURATION) {
-        rafRef.current = requestAnimationFrame(tick);
-      } else {
-        isPlayingRef.current = false;
-        setIsPlaying(false);
-        demoTimeRef.current = 0;
-        demoStartRef.current = null;
-        setTime(0);
-      }
-    };
-    rafRef.current = requestAnimationFrame(tick);
-  }, []);
-
-  const stopDemoClock = useCallback((captureTime?: number) => {
-    cancelAnimationFrame(rafRef.current);
-    if (captureTime !== undefined) demoTimeRef.current = captureTime;
-    demoStartRef.current = null;
-  }, []);
-
-  // Sync media element events
+    if (!micOn) return;
+    return tracker.attach(engine);
+  }, [micOn, tracker, engine]);
   useEffect(() => {
-    if (mediaType === "none") return;
-    const el = mediaType === "audio" ? audioRef.current : videoRef.current;
-    if (!el) return;
-    const onTimeUpdate = () => setTime(el.currentTime);
-    const onDurationChange = () => setDuration(isFinite(el.duration) ? el.duration : DEMO_DURATION);
-    const onEnded = () => setIsPlaying(false);
-    el.addEventListener("timeupdate", onTimeUpdate);
-    el.addEventListener("durationchange", onDurationChange);
-    el.addEventListener("ended", onEnded);
-    return () => {
-      el.removeEventListener("timeupdate", onTimeUpdate);
-      el.removeEventListener("durationchange", onDurationChange);
-      el.removeEventListener("ended", onEnded);
-    };
-  }, [mediaType]);
-
-  // Playback rate sync to media element
+    tracker.setOffset(shownTrack.offset ?? 0);
+  }, [tracker, shownTrack]);
   useEffect(() => {
-    const el = audioRef.current ?? videoRef.current;
-    if (el) el.playbackRate = playbackRate;
-  }, [playbackRate]);
+    sessionObj.setScoring(micOn ? tracker : null, { difficulty, micLatency: micLatencyMs / 1000 });
+  }, [sessionObj, micOn, tracker, difficulty, micLatencyMs]);
 
-  const getMediaEl = useCallback((): HTMLMediaElement | null => {
-    if (mediaType === "audio") return audioRef.current;
-    if (mediaType === "video") return videoRef.current;
-    return null;
-  }, [mediaType]);
-
-  const handlePlay = useCallback(() => {
-    const el = getMediaEl();
-    if (el) {
-      el.play().catch(() => {});
-    } else {
-      startDemoClock();
+  const toggleMic = useCallback(() => {
+    if (mic.status === "on" || mic.status === "requesting") graph.disableMic();
+    else {
+      graph.ensureContext();
+      graph.resume();
+      void graph.enableMic();
     }
-    setIsPlaying(true);
-    isPlayingRef.current = true;
-  }, [getMediaEl, startDemoClock]);
+  }, [graph, mic.status]);
 
-  const handlePause = useCallback(() => {
-    const el = getMediaEl();
-    if (el) {
-      el.pause();
-    } else {
-      stopDemoClock(demoTimeRef.current + (demoStartRef.current !== null ? (performance.now() - demoStartRef.current) / 1000 * playbackRateRef.current : 0));
+  // finale embers once per finish, then the grade card after a beat
+  const finaleKey = session.finished ? session.generation : -1;
+  const [gradeReadyKey, setGradeReadyKey] = useState(-1);
+  useEffect(() => {
+    if (finaleKey < 0) return;
+    if (reducedMotion) {
+      const id = window.setTimeout(() => setGradeReadyKey(finaleKey), 0);
+      return () => window.clearTimeout(id);
     }
-    setIsPlaying(false);
-    isPlayingRef.current = false;
-  }, [getMediaEl, stopDemoClock]);
+    fxRef.current?.finale();
+    const id = window.setTimeout(() => setGradeReadyKey(finaleKey), 1700);
+    return () => window.clearTimeout(id);
+  }, [finaleKey, reducedMotion]);
 
-  const handleRestart = useCallback(() => {
-    const el = getMediaEl();
-    if (el) {
-      el.currentTime = 0;
-      el.play().catch(() => {});
-      setTime(0);
-    } else {
-      cancelAnimationFrame(rafRef.current);
-      demoTimeRef.current = 0;
-      demoStartRef.current = null;
-      setTime(0);
-      isPlayingRef.current = true;
-      startDemoClock();
-    }
-    setIsPlaying(true);
-    isPlayingRef.current = true;
-  }, [getMediaEl, startDemoClock]);
+  // performance mode: hide chrome after 3 s idle while playing fullscreen
+  const chromeHidden = useIdleHide(fullscreen.active && playback.playing && mode === "perform", 3000);
 
-  const handleSeek = useCallback(
-    (value: number) => {
-      const el = getMediaEl();
-      if (el) {
-        el.currentTime = value;
-        setTime(value);
-      } else {
-        cancelAnimationFrame(rafRef.current);
-        demoTimeRef.current = value / playbackRateRef.current;
-        setTime(value);
-        if (isPlayingRef.current) {
-          startDemoClock();
-        }
-      }
+  useHotkeys(
+    {
+      Space: () => engine.toggle(),
+      k: () => engine.toggle(),
+      f: () => fullscreen.toggle(),
+      ArrowLeft: () => engine.seek(engine.frame.time - 5),
+      ArrowRight: () => engine.seek(engine.frame.time + 5),
+      m: () => toggleMic(),
+      r: () => engine.restart(),
     },
-    [getMediaEl, startDemoClock]
+    mode === "perform",
   );
 
-  const handleFileUpload = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      if (fileUrlRef.current) URL.revokeObjectURL(fileUrlRef.current);
-      const url = URL.createObjectURL(file);
-      fileUrlRef.current = url;
-      setMediaUrl(url);
-      const isVideo = file.type.startsWith("video/");
-      setMediaType(isVideo ? "video" : "audio");
-      setIsPlaying(false);
-      isPlayingRef.current = false;
-      setTime(0);
-      demoTimeRef.current = 0;
-      stopDemoClock(0);
+  const singAgain = useCallback(() => {
+    sessionObj.resetScore();
+    setGradeDismissed(-1);
+    engine.restart();
+  }, [sessionObj, engine]);
+
+  // AudioContext must be resumed inside the user's Play gesture
+  useEffect(() => {
+    engine.setBeforePlay(() => {
+      if (graph.ctx) graph.resume();
+    });
+    return () => engine.setBeforePlay(null);
+  }, [engine, graph]);
+
+  // route uploaded media through the analyser when the visualizer is on
+  useEffect(() => {
+    if (!visualizer || playback.sourceKind !== "media") return;
+    const el = engine.mediaElement;
+    if (el) graph.attachMedia(el);
+  }, [visualizer, playback.sourceKind, engine, graph]);
+
+  useEffect(() => {
+    engine.setDemoDuration(timeline.duration);
+  }, [engine, timeline]);
+
+  // object URL lifecycle
+  useEffect(() => () => {
+    if (media) URL.revokeObjectURL(media.url);
+  }, [media]);
+
+  const handleFileUpload = useCallback((file: File) => {
+    // create the context inside the gesture that chose the file
+    if (visualizer) graph.ensureContext();
+    const url = URL.createObjectURL(file);
+    const kind: MediaKind = file.type.startsWith("video/") || /\.(mp4|webm|mov|m4v)$/i.test(file.name) ? "video" : "audio";
+    setMedia({ url, kind, name: file.name });
+  }, [graph, visualizer]);
+
+  const handleImportFile = useCallback(
+    (file: File) => {
+      file
+        .text()
+        .then((text) => {
+          const r = importLyricsText(file.name, text);
+          setTrack(r.track);
+          engine.pause();
+          engine.seek(0);
+          const w = r.warnings.length ? ` · ${r.warnings.join(" ")}` : "";
+          setNotice({ kind: "info", text: `Loaded ${r.track.lines.length} lines from ${file.name}${w}` });
+        })
+        .catch((err: unknown) => {
+          setNotice({ kind: "error", text: err instanceof Error ? err.message : "Could not read that file." });
+        });
     },
-    [stopDemoClock]
+    [engine],
   );
 
   useEffect(() => {
-    return () => {
-      if (fileUrlRef.current) URL.revokeObjectURL(fileUrlRef.current);
-      cancelAnimationFrame(rafRef.current);
-    };
-  }, []);
+    if (!notice) return;
+    const id = window.setTimeout(() => setNotice(null), notice.kind === "error" ? 9000 : 5000);
+    return () => window.clearTimeout(id);
+  }, [notice]);
 
-  const formatTime = (s: number) => {
-    const m = Math.floor(s / 60);
-    const sec = Math.floor(s % 60);
-    return `${m}:${sec.toString().padStart(2, "0")}`;
-  };
+  const applyStudioTrack = useCallback(
+    (t: Track) => {
+      setTrack(t);
+      setPreviewTrack(null);
+      setMode("perform");
+      engine.pause();
+      engine.seek(0);
+      setNotice({ kind: "info", text: `Studio timing applied: ${t.lines.length} lines.` });
+    },
+    [engine],
+  );
 
-  const activeSection = track.lines.find(
-    (l) => time >= l.start - 0.5 && time <= l.end + 0.5
-  )?.section;
+  const sectionIdx = session.activeIdx >= 0 ? session.activeIdx : Math.min(shownTrack.lines.length - 1, Math.max(0, session.cursorIdx - 1));
+  const activeSection = session.activeIdx >= 0 || session.cursorIdx > 0 ? shownTrack.lines[sectionIdx]?.section ?? null : null;
 
   return (
     <div
       className={`app-root theme-${theme}`}
       data-theme={theme}
       data-landscape={String(isLandscape)}
+      data-media={media?.kind ?? "none"}
+      data-mode={mode}
+      data-motion={reducedMotion ? "reduced" : "full"}
+      data-chrome={chromeHidden ? "hidden" : "visible"}
+      data-fullscreen={String(fullscreen.active)}
       data-testid="app-root"
     >
-      {/* Stage background */}
       <div className="stage-bg" aria-hidden="true">
         <div className="stage-grain" />
         <div className="stage-vignette" />
@@ -218,144 +217,146 @@ export default function App() {
         <div className="stage-spotlight stage-spotlight--center" />
       </div>
 
-      {/* Video fullscreen background */}
-      {mediaType === "video" && mediaUrl && (
-        <video
-          ref={videoRef}
-          src={mediaUrl}
-          className="stage-video"
-          playsInline
-          data-testid="video-element"
-        />
-      )}
-      {mediaType === "audio" && mediaUrl && (
-        <audio ref={audioRef} src={mediaUrl} data-testid="audio-element" />
-      )}
+      {media && <MediaElement key={media.url} engine={engine} kind={media.kind} src={media.url} />}
 
-      {/* Lyric overlay */}
+      <SpectrumCanvas engine={engine} graph={graph} timeline={timeline} visible={visualizer} reducedMotion={reducedMotion} theme={theme} />
+
       <div className="lyric-overlay">
         <Karaoke
-          lines={track.lines}
-          time={time}
-          playbackRate={playbackRate}
+          engine={engine}
+          timeline={timeline}
+          activeIdx={session.activeIdx}
+          cursorIdx={session.cursorIdx}
+          generation={session.generation}
           isLandscape={isLandscape}
+          reducedMotion={reducedMotion}
+          onPeak={onPeak}
         />
-      </div>
-
-      {/* Header */}
-      <header className="app-header" data-testid="app-header">
-        <div className="app-brand">
-          <Logo />
-          <span className="app-name">LyricGlow</span>
-        </div>
-        <div className="header-meta">
-          {activeSection && (
-            <span className="header-section-badge" data-testid="header-section-badge">
-              {activeSection}
-            </span>
-          )}
-          <div className="track-info">
-            <span className="track-title" data-testid="track-title">
-              {track.title}
-            </span>
-            <span className="track-artist" data-testid="track-artist">
-              {track.artist}
-            </span>
-          </div>
-        </div>
-        <button
-          className="theme-toggle"
-          onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-          aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
-          data-testid="theme-toggle"
-        >
-          {theme === "dark" ? "☀" : "☾"}
-        </button>
-      </header>
-
-      {/* Controls dock */}
-      <div className="controls-dock" data-testid="controls-dock">
-        <div className="progress-row">
-          <span className="time-label" data-testid="time-current">
-            {formatTime(time)}
-          </span>
-          <input
-            type="range"
-            className="seek-bar"
-            min={0}
-            max={duration}
-            step={0.1}
-            value={time}
-            onChange={(e) => handleSeek(Number(e.target.value))}
-            aria-label="Seek position"
-            data-testid="seek-bar"
+        <ParticleLayer enabled={!reducedMotion} theme={theme} fxRef={fxRef} />
+        <CountIn countIn={session.countIn} />
+        <SectionCard event={session.sectionEvent} />
+        {micOn && (
+          <PitchLane
+            engine={engine}
+            timeline={timeline}
+            tracker={tracker}
+            session={sessionObj}
+            activeIdx={session.activeIdx}
+            cursorIdx={session.cursorIdx}
+            reducedMotion={reducedMotion}
+            micLatency={micLatencyMs / 1000}
           />
-          <span className="time-label" data-testid="time-duration">
-            {formatTime(duration)}
-          </span>
-        </div>
-
-        <div className="transport-row">
-          <button
-            className="transport-btn"
-            onClick={handleRestart}
-            aria-label="Restart"
-            data-testid="btn-restart"
-          >
-            ⏮
-          </button>
-
-          {isPlaying ? (
-            <button
-              className="transport-btn transport-btn--primary"
-              onClick={handlePause}
-              aria-label="Pause"
-              data-testid="btn-pause"
-            >
-              ⏸
-            </button>
-          ) : (
-            <button
-              className="transport-btn transport-btn--primary"
-              onClick={handlePlay}
-              aria-label="Play"
-              data-testid="btn-play"
-            >
-              ▶
-            </button>
-          )}
-
-          <div className="tempo-control" data-testid="tempo-control">
-            <label htmlFor="tempo-slider" className="tempo-label">
-              {playbackRate.toFixed(2)}×
-            </label>
-            <input
-              id="tempo-slider"
-              type="range"
-              className="tempo-slider"
-              min={0.5}
-              max={2.0}
-              step={0.05}
-              value={playbackRate}
-              onChange={(e) => setPlaybackRate(Number(e.target.value))}
-              aria-label="Playback speed"
-              data-testid="tempo-slider"
-            />
-          </div>
-
-          <label className="upload-btn" data-testid="upload-label">
-            <input
-              type="file"
-              accept="audio/*,video/*"
-              onChange={handleFileUpload}
-              className="sr-only"
-              aria-label="Upload media file"
-              data-testid="file-input"
-            />
-            ⬆ Upload
-          </label>
-        </div>
+        )}
       </div>
+
+      {session.score && mode === "perform" && <ScoreHud score={session.score} />}
+
+      {session.finished && mode === "perform" && gradeReadyKey === session.generation && gradeDismissed !== session.generation && (
+        <GradeScreen
+          title={shownTrack.title}
+          summary={session.summary}
+          micOn={micOn}
+          onSingAgain={singAgain}
+          onClose={() => setGradeDismissed(session.generation)}
+        />
+      )}
+
+      <Header
+        title={shownTrack.title}
+        artist={media ? `${shownTrack.artist || "—"} · ${media.name}` : shownTrack.artist}
+        section={activeSection}
+        theme={theme}
+        onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+      >
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={() => {
+            const next = !visualizer;
+            setVisualizer(next);
+            if (next) {
+              graph.ensureContext();
+              graph.resume();
+            }
+          }}
+          aria-pressed={visualizer}
+          aria-label={visualizer ? "Turn stage lights off" : "Turn stage lights on"}
+          title="Audio-reactive stage lights"
+          data-testid="visualizer-toggle"
+        >
+          <IconSparkle />
+        </button>
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={fullscreen.toggle}
+          aria-pressed={fullscreen.active}
+          aria-label={fullscreen.active ? "Exit performance mode" : "Enter performance mode (fullscreen)"}
+          title="Performance mode (F)"
+          data-testid="btn-fullscreen"
+        >
+          {fullscreen.active ? <IconExitFullscreen /> : <IconFullscreen />}
+        </button>
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={() => setEffects((e) => (e === "reduced" ? "auto" : "reduced"))}
+          aria-pressed={effects === "reduced"}
+          aria-label={effects === "reduced" ? "Enable full motion" : "Reduce motion"}
+          title="Reduce motion"
+          data-testid="effects-toggle"
+        >
+          ≈
+        </button>
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={() => setMode((m) => (m === "studio" ? "perform" : "studio"))}
+          aria-pressed={mode === "studio"}
+          aria-label={mode === "studio" ? "Close Sync Studio" : "Open Sync Studio"}
+          title="Sync Studio — time your own lyrics"
+          data-testid="btn-studio"
+        >
+          <IconStudio />
+        </button>
+      </Header>
+
+      {notice && (
+        <div
+          className={`notice notice--${notice.kind}`}
+          role={notice.kind === "error" ? "alert" : "status"}
+          data-testid={notice.kind === "error" ? "import-error" : "import-notice"}
+        >
+          {notice.text}
+          <button type="button" className="notice-close" onClick={() => setNotice(null)} aria-label="Dismiss message" data-testid="notice-close">
+            ×
+          </button>
+        </div>
+      )}
+
+      {mode === "studio" ? (
+        <SyncStudio
+          engine={engine}
+          playback={playback}
+          state={studio}
+          dispatch={dispatchStudio}
+          onPreview={setPreviewTrack}
+          onApply={applyStudioTrack}
+          onClose={() => setMode("perform")}
+        />
+      ) : (
+        <ControlsDock engine={engine} playback={playback} onFileUpload={handleFileUpload}>
+          <LibraryButtons track={track} onImportFile={handleImportFile} />
+          <MicControls
+            mic={mic}
+            onToggleMic={toggleMic}
+            difficulty={difficulty}
+            onDifficulty={setDifficulty}
+            micLatencyMs={micLatencyMs}
+            onMicLatency={setMicLatencyMs}
+          />
+        </ControlsDock>
+      )}
     </div>
   );
 }
