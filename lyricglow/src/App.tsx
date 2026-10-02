@@ -23,6 +23,7 @@ import { useAudioGraph } from "./engine/useAudioGraph";
 import { isIOS, useReducedMotion, type EffectsLevel } from "./hooks/useReducedMotion";
 import { PitchTracker } from "./engine/PitchTracker";
 import { DemoSynth } from "./engine/DemoSynth";
+import VocalControl from "./components/VocalControl";
 import type { Difficulty } from "./engine/scoring";
 import PitchLane from "./components/PitchLane";
 import ScoreHud from "./components/ScoreHud";
@@ -54,6 +55,7 @@ export default function App() {
   const [difficulty, setDifficulty] = useState<Difficulty>("normal");
   const [micLatencyMs, setMicLatencyMs] = useState(60);
   const [demoSound, setDemoSound] = useState(true);
+  const [vocalLevel, setVocalLevel] = useState(0.35);
   const iosHintShown = useRef(false);
   const [gradeDismissed, setGradeDismissed] = useState(-1);
   const fxRef = useRef<StageFx | null>(null);
@@ -171,13 +173,14 @@ export default function App() {
   }, [fileUrl]);
 
   const handleFileUpload = useCallback((file: File) => {
-    // create the context inside the gesture that chose the file
-    if (visualizer) graph.ensureContext();
+    // create the context inside the gesture that chose the file (analyser + vocal chain)
+    graph.ensureContext();
+    graph.resume();
     const url = URL.createObjectURL(file);
     const kind: MediaKind = file.type.startsWith("video/") || /\.(mp4|webm|mov|m4v)$/i.test(file.name) ? "video" : "audio";
     setSource({ kind: "file", url, mediaKind: kind, name: file.name });
     setSongOpen(false);
-  }, [graph, visualizer]);
+  }, [graph]);
 
   const handleYouTube = useCallback((videoId: string) => {
     setSource({ kind: "youtube", videoId });
@@ -435,6 +438,9 @@ export default function App() {
         />
       ) : (
         <ControlsDock engine={engine} playback={playback} onFileUpload={handleFileUpload}>
+          {media && playback.sourceKind === "media" && (
+            <VocalControl engine={engine} graph={graph} sourceKey={media.url} level={vocalLevel} onLevel={setVocalLevel} />
+          )}
           <button type="button" className="dock-btn dock-btn--accent" onClick={() => setSongOpen(true)} aria-label="Find a song" data-testid="btn-find-song">
             <IconSearch /> Find song
           </button>

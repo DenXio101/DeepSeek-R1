@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Track } from "../lyrics";
 import { formatDuration, searchLyrics, type LyricsSearchHit } from "../model/lrclib";
 import { parseYouTubeId, youtubeSearchUrl } from "../engine/youtube";
+import { searchYouTube, youtubeApiKey, type YouTubeHit } from "../model/youtubeSearch";
 import { IconUpload } from "./Icons";
 
 export type BackingSource =
@@ -33,6 +34,33 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
   const [error, setError] = useState<string | null>(null);
   const [ytInput, setYtInput] = useState("");
   const [ytError, setYtError] = useState<string | null>(null);
+  const ytKey = youtubeApiKey();
+  const [ytQuery, setYtQuery] = useState("");
+  const [ytHits, setYtHits] = useState<YouTubeHit[]>([]);
+  const [ytStatus, setYtStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [ytSearchError, setYtSearchError] = useState<string | null>(null);
+  const ytAbort = useRef<AbortController | null>(null);
+  const lastAutoRef = useRef("");
+
+  const runYouTubeSearch = (q: string) => {
+    if (!ytKey || !q.trim()) return;
+    ytAbort.current?.abort();
+    const ctl = new AbortController();
+    ytAbort.current = ctl;
+    setYtStatus("loading");
+    setYtSearchError(null);
+    searchYouTube(q, ytKey, ctl.signal)
+      .then((h) => {
+        if (ctl.signal.aborted) return;
+        setYtHits(h);
+        setYtStatus("done");
+      })
+      .catch((err: unknown) => {
+        if (ctl.signal.aborted) return;
+        setYtStatus("error");
+        setYtSearchError(err instanceof Error ? err.message : "YouTube search failed.");
+      });
+  };
   const abortRef = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -68,9 +96,20 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
     if (open) window.setTimeout(() => inputRef.current?.focus(), 50);
   }, [open]);
 
+  // auto-suggest videos for the current song whenever it changes while the panel is open
+  const autoQuery = `${track.title} ${track.artist !== "Unknown artist" ? track.artist : ""} karaoke`.trim();
+  useEffect(() => {
+    if (!open || !ytKey || track.source === "demo") return;
+    if (lastAutoRef.current === autoQuery) return;
+    lastAutoRef.current = autoQuery;
+    setYtQuery(autoQuery);
+    runYouTubeSearch(autoQuery);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runYouTubeSearch is stable enough; re-run only on song/open change
+  }, [open, ytKey, autoQuery, track.source]);
+
   if (!open) return null;
 
-  const ytQuery = `${track.title} ${track.artist !== "Unknown artist" ? track.artist : ""} karaoke`.trim();
+  const ytQueryManual = autoQuery;
   const offset = track.offset ?? 0;
 
   const submitYouTube = () => {
@@ -182,10 +221,58 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
               />
               <IconUpload /> Audio / video file
             </label>
-            <a className="dock-btn" href={youtubeSearchUrl(ytQuery)} target="_blank" rel="noopener noreferrer" data-testid="song-youtube-search">
-              Find on YouTube ↗
-            </a>
+            {!ytKey && (
+              <a className="dock-btn" href={youtubeSearchUrl(ytQueryManual)} target="_blank" rel="noopener noreferrer" data-testid="song-youtube-search">
+                Find on YouTube ↗
+              </a>
+            )}
           </div>
+          {ytKey && (
+            <>
+              <form
+                className="studio-row"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  runYouTubeSearch(ytQuery);
+                }}
+              >
+                <input
+                  className="song-search song-yt"
+                  type="search"
+                  value={ytQuery}
+                  onChange={(e) => setYtQuery(e.target.value)}
+                  placeholder="Search YouTube for a backing track…"
+                  aria-label="Search YouTube"
+                  data-testid="youtube-search-input"
+                  enterKeyHint="search"
+                />
+                <button type="submit" className="dock-btn" data-testid="youtube-search-go">
+                  Search
+                </button>
+              </form>
+              <div className="yt-results" data-testid="youtube-results" aria-live="polite">
+                {ytStatus === "loading" && <div className="song-hint">Searching YouTube…</div>}
+                {ytStatus === "error" && (
+                  <div className="song-hint song-hint--error" data-testid="youtube-search-error">
+                    {ytSearchError}
+                  </div>
+                )}
+                {ytStatus === "done" && ytHits.length === 0 && <div className="song-hint">No videos found — try other words or paste a link below.</div>}
+                {ytHits.map((h, i) => (
+                  <button key={h.videoId} type="button" className="yt-hit" onClick={() => onYouTube(h.videoId)} data-testid={`youtube-result-${i}`}>
+                    {h.thumbnail ? <img className="yt-thumb" src={h.thumbnail} alt="" loading="lazy" /> : <span className="yt-thumb" />}
+                    <span className="yt-hit-main">
+                      <span className="yt-hit-title">{h.title}</span>
+                      <span className="yt-hit-meta">
+                        {h.channel}
+                        {h.duration ? ` · ${formatDuration(h.duration)}` : ""}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
           <form
             className="studio-row"
             onSubmit={(e) => {
@@ -212,7 +299,9 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
               {ytError}
             </div>
           )}
-          <div className="song-hint">YouTube plays as the stage video; the stage lights follow the song's BPM there (browsers don't expose YouTube audio).</div>
+          <div className="song-hint">
+            YouTube plays as the stage video; the stage lights follow the song's BPM there (browsers don't expose YouTube audio). Search "karaoke" for no vocals, or the original to sing with the artist.
+          </div>
         </div>
 
         {/* ── 3. timing ── */}

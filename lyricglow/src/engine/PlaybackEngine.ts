@@ -151,15 +151,15 @@ export class PlaybackEngine {
       const tr = this.transport;
       const t = tr.time();
       if (this.playingFlag && t === this.lastMediaTime) {
-        // source hasn't advanced its clock yet: extrapolate (bounded)
-        const est = t + ((now - this.lastMediaNow) / 1000) * f.rate;
-        f.time = Math.min(est, t + tr.extrapolation);
+        // source hasn't advanced its clock yet: extrapolate (bounded), never slipping back by a hair
+        const est = Math.min(t + ((now - this.lastMediaNow) / 1000) * f.rate, t + tr.extrapolation);
+        f.time = f.time > est && f.time - est < 0.05 ? f.time : est;
       } else {
         const wasPlaying = this.playingFlag && this.lastMediaTime >= 0;
         this.lastMediaTime = t;
         this.lastMediaNow = now;
-        // never step backwards by a hair when a fresh value lands behind our estimate
-        f.time = wasPlaying && f.time > t && f.time - t < 0.05 ? f.time : t;
+        // a fresh value slightly behind our estimate: keep moving forward from the estimate (a real seek jumps)
+        f.time = wasPlaying && f.time > t && f.time - t < 0.05 ? f.time + dt * f.rate * 0.5 : t;
       }
     } else {
       if (this.playingFlag) {

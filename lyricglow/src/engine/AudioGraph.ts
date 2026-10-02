@@ -14,6 +14,123 @@ type Win = { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof Aud
 /** createMediaElementSource may only be called once per element per document */
 const mediaSources = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>();
 
+/**
+ * Centre-channel vocal control. Studio vocals usually sit dead-centre of a
+ * stereo mix, so (L−R) removes them while keeping the sides; the bass (also
+ * centred) is restored from a low-passed mono sum.
+ *   out = v·original + (1−v)·(side + lowBass)
+ */
+export interface VocalChain {
+  input: GainNode;
+  output: GainNode;
+  setLevel(v: number): void;
+  level: number;
+  /** analyser on the side signal, used to detect mono sources */
+  sideMeter: AnalyserNode;
+  midMeter: AnalyserNode;
+  dispose(): void;
+}
+
+export function createVocalChain(ctx: AudioContext): VocalChain {
+  const input = ctx.createGain();
+  // force a proper mono→stereo up-mix (L = R) so the splitter never sees a silent right channel
+  input.channelCount = 2;
+  input.channelCountMode = "explicit";
+  input.channelInterpretation = "speakers";
+  const output = ctx.createGain();
+  const split = ctx.createChannelSplitter(2);
+  const merge = ctx.createChannelMerger(2);
+  input.connect(split);
+
+  // original passthrough (scaled by v)
+  const dryL = ctx.createGain();
+  const dryR = ctx.createGain();
+  split.connect(dryL, 0);
+  split.connect(dryR, 1);
+  dryL.connect(merge, 0, 0);
+  dryR.connect(merge, 0, 1);
+
+  // side signal: L−R to left, R−L to right (scaled by 1−v)
+  const sLpos = ctx.createGain();
+  const sLneg = ctx.createGain();
+  const sRpos = ctx.createGain();
+  const sRneg = ctx.createGain();
+  split.connect(sLpos, 0);
+  split.connect(sLneg, 1);
+  split.connect(sRpos, 1);
+  split.connect(sRneg, 0);
+  sLpos.connect(merge, 0, 0);
+  sLneg.connect(merge, 0, 0);
+  sRpos.connect(merge, 0, 1);
+  sRneg.connect(merge, 0, 1);
+
+  // low bass from the mono sum (scaled by 1−v)
+  const lowIn = ctx.createGain();
+  lowIn.gain.value = 0.5;
+  split.connect(lowIn, 0);
+  split.connect(lowIn, 1);
+  const lp = ctx.createBiquadFilter();
+  lp.type = "lowpass";
+  lp.frequency.value = 140;
+  lp.Q.value = 0.7;
+  const lowOut = ctx.createGain();
+  lowIn.connect(lp);
+  lp.connect(lowOut);
+  lowOut.connect(merge, 0, 0);
+  lowOut.connect(merge, 0, 1);
+
+  merge.connect(output);
+
+  // meters for mono detection
+  const sideMeter = ctx.createAnalyser();
+  sideMeter.fftSize = 256;
+  const midMeter = ctx.createAnalyser();
+  midMeter.fftSize = 256;
+  const sideTap = ctx.createGain();
+  split.connect(sideTap, 0);
+  const sideNeg = ctx.createGain();
+  sideNeg.gain.value = -1;
+  split.connect(sideNeg, 1);
+  sideNeg.connect(sideTap);
+  sideTap.connect(sideMeter);
+  lowIn.connect(midMeter);
+
+  const chain: VocalChain = {
+    input,
+    output,
+    level: 1,
+    sideMeter,
+    midMeter,
+    setLevel(v: number) {
+      const lv = Math.max(0, Math.min(1, v));
+      chain.level = lv;
+      const t = ctx.currentTime;
+      const wet = 1 - lv;
+      const sideGain = wet * 0.9;
+      dryL.gain.setTargetAtTime(lv, t, 0.03);
+      dryR.gain.setTargetAtTime(lv, t, 0.03);
+      sLpos.gain.setTargetAtTime(sideGain, t, 0.03);
+      sRpos.gain.setTargetAtTime(sideGain, t, 0.03);
+      sLneg.gain.setTargetAtTime(-sideGain, t, 0.03);
+      sRneg.gain.setTargetAtTime(-sideGain, t, 0.03);
+      lowOut.gain.setTargetAtTime(wet, t, 0.03);
+    },
+    dispose() {
+      for (const n of [input, output, split, merge, dryL, dryR, sLpos, sLneg, sRpos, sRneg, lowIn, lp, lowOut, sideMeter, midMeter, sideTap, sideNeg]) {
+        try {
+          n.disconnect();
+        } catch {
+          /* ignore */
+        }
+      }
+    },
+  };
+  chain.setLevel(1);
+  return chain;
+}
+
+const vocalChains = new WeakMap<HTMLMediaElement, VocalChain>();
+
 export const MIC_FFT = 2048;
 const MEDIA_FFT = 1024;
 
@@ -69,17 +186,70 @@ export class AudioGraph {
     if (!ctx) return false;
     if (this.attachedEl === el && this.mediaAnalyser) return true;
     try {
-      let src = mediaSources.get(el);
-      if (!src) {
-        src = ctx.createMediaElementSource(el);
-        mediaSources.set(el, src);
-        src.connect(ctx.destination); // keep audible, always
-      }
-      this.useSource(src, el);
+      this.sourceFor(ctx, el);
+      // tap after the vocal chain so the stage lights follow what is actually heard
+      const tap = vocalChains.get(el)?.output;
+      this.useSource(tap ?? this.sourceFor(ctx, el), el);
       return true;
     } catch {
       return false;
     }
+  }
+
+  /** element → (vocal chain) → destination; built once per element, always audible */
+  private sourceFor(ctx: AudioContext, el: HTMLMediaElement): MediaElementAudioSourceNode {
+    let src = mediaSources.get(el);
+    if (!src) {
+      src = ctx.createMediaElementSource(el);
+      mediaSources.set(el, src);
+      const chain = createVocalChain(ctx);
+      src.connect(chain.input);
+      chain.output.connect(ctx.destination);
+      vocalChains.set(el, chain);
+    }
+    return src;
+  }
+
+  /** Route the element through Web Audio (if not already) and set how much of the centre/vocal remains, 0..1. */
+  setVocalLevel(el: HTMLMediaElement, level: number): boolean {
+    const ctx = this.ensureContext();
+    if (!ctx) return false;
+    try {
+      this.sourceFor(ctx, el);
+      vocalChains.get(el)?.setLevel(level);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  getVocalLevel(el: HTMLMediaElement): number {
+    return vocalChains.get(el)?.level ?? 1;
+  }
+
+  /** true when the element plays through a vocal chain already */
+  hasVocalChain(el: HTMLMediaElement): boolean {
+    return vocalChains.has(el);
+  }
+
+  /**
+   * Is the source effectively mono (no side signal)? null = not enough signal yet.
+   * Vocal reduction on a mono file would mute almost everything, so callers bypass it.
+   */
+  vocalSourceIsMono(el: HTMLMediaElement): boolean | null {
+    const chain = vocalChains.get(el);
+    if (!chain) return null;
+    const buf = new Float32Array(chain.sideMeter.fftSize);
+    chain.sideMeter.getFloatTimeDomainData(buf);
+    let side = 0;
+    for (let i = 0; i < buf.length; i++) side += buf[i] * buf[i];
+    side = Math.sqrt(side / buf.length);
+    chain.midMeter.getFloatTimeDomainData(buf);
+    let mid = 0;
+    for (let i = 0; i < buf.length; i++) mid += buf[i] * buf[i];
+    mid = Math.sqrt(mid / buf.length);
+    if (mid < 0.01) return null;
+    return side / mid < 0.02;
   }
 
   /** Feed any audio node (e.g. the demo synth) into the stage analyser. Caller keeps its own path to the destination. */
