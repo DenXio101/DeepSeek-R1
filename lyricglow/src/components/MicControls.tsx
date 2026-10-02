@@ -9,9 +9,11 @@ interface Props {
   onDifficulty: (d: Difficulty) => void;
   micLatencyMs: number;
   onMicLatency: (ms: number) => void;
+  demoSound: boolean;
+  onDemoSound: (on: boolean) => void;
 }
 
-export default function MicControls({ mic, onToggleMic, difficulty, onDifficulty, micLatencyMs, onMicLatency }: Props) {
+export default function MicControls({ mic, onToggleMic, difficulty, onDifficulty, micLatencyMs, onMicLatency, demoSound, onDemoSound }: Props) {
   const on = mic.status === "on";
   return (
     <div className="mic-controls">
@@ -58,6 +60,10 @@ export default function MicControls({ mic, onToggleMic, difficulty, onDifficulty
               aria-label="Microphone latency compensation"
               data-testid="mic-latency"
             />
+          </label>
+          <label className="settings-check">
+            <input type="checkbox" checked={demoSound} onChange={(e) => onDemoSound(e.target.checked)} data-testid="demo-sound-toggle" />
+            Demo melody (plays when no backing track is loaded)
           </label>
           <p className="settings-hint">Use headphones so the backing track doesn't get scored instead of you. On iPhone the mic may lower media volume.</p>
           <dl className="shortcuts" aria-label="Keyboard shortcuts">

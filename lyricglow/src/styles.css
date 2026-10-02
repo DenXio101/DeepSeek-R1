@@ -332,6 +332,8 @@ a.dock-btn { text-decoration: none; }
 }
 .settings-body label { display: flex; flex-direction: column; gap: 4px; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); }
 .settings-body select { background: var(--control-bg); border: 1px solid var(--border); border-radius: 8px; padding: 5px 8px; color: var(--text-primary); text-transform: none; letter-spacing: 0; }
+.settings-check { flex-direction: row !important; align-items: center; gap: 8px !important; text-transform: none !important; letter-spacing: 0 !important; font-size: 0.8rem !important; color: var(--text-primary) !important; }
+.settings-check input { accent-color: var(--gold); width: 16px; height: 16px; }
 .settings-hint { font-size: 0.72rem; color: var(--text-muted); line-height: 1.35; }
 .shortcuts { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 0.72rem; color: var(--text-muted); margin: 0; }
 .shortcuts dt { font-family: var(--font-ui); text-transform: none; letter-spacing: 0; }

@@ -22,6 +22,7 @@ import SpectrumCanvas from "./components/SpectrumCanvas";
 import { useAudioGraph } from "./engine/useAudioGraph";
 import { isIOS, useReducedMotion, type EffectsLevel } from "./hooks/useReducedMotion";
 import { PitchTracker } from "./engine/PitchTracker";
+import { DemoSynth } from "./engine/DemoSynth";
 import type { Difficulty } from "./engine/scoring";
 import PitchLane from "./components/PitchLane";
 import ScoreHud from "./components/ScoreHud";
@@ -52,6 +53,8 @@ export default function App() {
   const reducedMotion = useReducedMotion(effects);
   const [difficulty, setDifficulty] = useState<Difficulty>("normal");
   const [micLatencyMs, setMicLatencyMs] = useState(60);
+  const [demoSound, setDemoSound] = useState(true);
+  const iosHintShown = useRef(false);
   const [gradeDismissed, setGradeDismissed] = useState(-1);
   const fxRef = useRef<StageFx | null>(null);
   const onPeak = useCallback((p: Point, voice: Voice) => fxRef.current?.emit(p, voice), []);
@@ -126,13 +129,29 @@ export default function App() {
     engine.restart();
   }, [sessionObj, engine]);
 
-  // AudioContext must be resumed inside the user's Play gesture
+  // AudioContext must be created/resumed inside the user's Play gesture
   useEffect(() => {
     engine.setBeforePlay(() => {
-      if (graph.ctx) graph.resume();
+      if (graph.ctx || engine.getSnapshot().sourceKind === "demo") graph.ensureContext();
+      graph.resume();
     });
     return () => engine.setBeforePlay(null);
   }, [engine, graph]);
+
+  // the demo sings: synthesized melody + beat while no backing track is loaded
+  const isDemoSource = playback.sourceKind === "demo";
+  useEffect(() => {
+    if (!isDemoSource || !demoSound || mode === "studio") return;
+    const synth = new DemoSynth(graph, timeline);
+    return synth.attach(engine);
+  }, [isDemoSource, demoSound, mode, graph, timeline, engine]);
+
+  useEffect(() => {
+    if (playback.playing && isDemoSource && demoSound && isIOS() && !iosHintShown.current) {
+      iosHintShown.current = true;
+      setNotice({ kind: "info", text: "Demo melody playing. Hear nothing on iPhone? Flip the silent switch off and turn the volume up." });
+    }
+  }, [playback.playing, isDemoSource, demoSound]);
 
   // route uploaded media through the analyser when the visualizer is on
   useEffect(() => {
@@ -427,6 +446,8 @@ export default function App() {
             onDifficulty={setDifficulty}
             micLatencyMs={micLatencyMs}
             onMicLatency={setMicLatencyMs}
+            demoSound={demoSound}
+            onDemoSound={setDemoSound}
           />
         </ControlsDock>
       )}

@@ -75,17 +75,45 @@ export class AudioGraph {
         mediaSources.set(el, src);
         src.connect(ctx.destination); // keep audible, always
       }
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = MEDIA_FFT;
-      analyser.smoothingTimeConstant = 0.8;
-      src.connect(analyser);
-      this.detachMedia();
-      this.mediaAnalyser = analyser;
-      this.attachedEl = el;
+      this.useSource(src, el);
       return true;
     } catch {
       return false;
     }
+  }
+
+  /** Feed any audio node (e.g. the demo synth) into the stage analyser. Caller keeps its own path to the destination. */
+  attachSourceNode(node: AudioNode): boolean {
+    const ctx = this.ensureContext();
+    if (!ctx) return false;
+    try {
+      this.useSource(node, null);
+      this.sourceNode = node;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  detachSourceNode(node: AudioNode): void {
+    if (this.sourceNode === node) {
+      this.detachMedia();
+      this.sourceNode = null;
+    }
+  }
+
+  private sourceNode: AudioNode | null = null;
+
+  private useSource(src: AudioNode, el: HTMLMediaElement | null): void {
+    const ctx = this.ctx!;
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = MEDIA_FFT;
+    analyser.smoothingTimeConstant = 0.8;
+    src.connect(analyser);
+    this.detachMedia();
+    this.mediaAnalyser = analyser;
+    this.attachedEl = el;
+    this.sourceNode = el ? null : src;
   }
 
   /** stop reading the analyser (audio keeps flowing to the destination) */
@@ -102,7 +130,9 @@ export class AudioGraph {
   }
 
   get mediaAnalyserActive(): boolean {
-    return !!this.mediaAnalyser && !!this.attachedEl && this.attachedEl.isConnected;
+    if (!this.mediaAnalyser) return false;
+    if (this.attachedEl) return this.attachedEl.isConnected;
+    return !!this.sourceNode;
   }
 
   /** fills and returns the byte spectrum, or null when no analyser is active */
