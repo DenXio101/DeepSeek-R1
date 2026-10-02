@@ -1,0 +1,237 @@
+import { useEffect, useRef, useState } from "react";
+import type { Track } from "../lyrics";
+import { formatDuration, searchLyrics, type LyricsSearchHit } from "../model/lrclib";
+import { parseYouTubeId, youtubeSearchUrl } from "../engine/youtube";
+import { IconUpload } from "./Icons";
+
+export type BackingSource =
+  | { kind: "none" }
+  | { kind: "file"; url: string; mediaKind: "audio" | "video"; name: string }
+  | { kind: "youtube"; videoId: string };
+
+interface Props {
+  open: boolean;
+  onClose: () => void;
+  track: Track;
+  source: BackingSource;
+  onPickSynced: (hit: LyricsSearchHit) => void;
+  onPickPlain: (hit: LyricsSearchHit) => void;
+  onFile: (file: File) => void;
+  onYouTube: (videoId: string) => void;
+  onClearSource: () => void;
+  onNudge: (deltaSeconds: number) => void;
+}
+
+/**
+ * "Find a song": search synced lyrics (LRCLIB), choose a backing track
+ * (local file or YouTube link) and fine-tune lyric timing.
+ */
+export default function SongPanel({ open, onClose, track, source, onPickSynced, onPickPlain, onFile, onYouTube, onClearSource, onNudge }: Props) {
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<LyricsSearchHit[]>([]);
+  const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [ytInput, setYtInput] = useState("");
+  const [ytError, setYtError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // debounced search
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      abortRef.current?.abort();
+      return;
+    }
+    const id = window.setTimeout(() => {
+      abortRef.current?.abort();
+      const ctl = new AbortController();
+      abortRef.current = ctl;
+      setStatus("loading");
+      setError(null);
+      searchLyrics(q, ctl.signal)
+        .then((h) => {
+          if (ctl.signal.aborted) return;
+          setHits(h);
+          setStatus("done");
+        })
+        .catch((err: unknown) => {
+          if (ctl.signal.aborted) return;
+          setStatus("error");
+          setError(err instanceof Error ? err.message : "Search failed.");
+        });
+    }, 350);
+    return () => window.clearTimeout(id);
+  }, [query]);
+
+  useEffect(() => {
+    if (open) window.setTimeout(() => inputRef.current?.focus(), 50);
+  }, [open]);
+
+  if (!open) return null;
+
+  const ytQuery = `${track.title} ${track.artist !== "Unknown artist" ? track.artist : ""} karaoke`.trim();
+  const offset = track.offset ?? 0;
+
+  const submitYouTube = () => {
+    const id = parseYouTubeId(ytInput);
+    if (!id) {
+      setYtError("Paste a YouTube link (youtube.com/watch?v=… or youtu.be/…).");
+      return;
+    }
+    setYtError(null);
+    onYouTube(id);
+    setYtInput("");
+  };
+
+  return (
+    <div className="sheet-backdrop" onClick={onClose} data-testid="song-panel-backdrop">
+      <section className="sheet" role="dialog" aria-modal="true" aria-label="Find a song" onClick={(e) => e.stopPropagation()} data-testid="song-panel">
+        <header className="sheet-head">
+          <h2 className="sheet-title">Find a song</h2>
+          <button type="button" className="dock-btn" onClick={onClose} aria-label="Close" data-testid="song-panel-close">
+            Close
+          </button>
+        </header>
+
+        {/* ── 1. lyrics ── */}
+        <div className="sheet-section">
+          <div className="sheet-label">1 · Lyrics</div>
+          <input
+            ref={inputRef}
+            className="song-search"
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Song title and artist…"
+            aria-label="Search lyrics"
+            data-testid="song-search-input"
+            enterKeyHint="search"
+          />
+          <div className="song-results" data-testid="song-results" aria-live="polite">
+            {status === "loading" && <div className="song-hint">Searching…</div>}
+            {status === "error" && (
+              <div className="song-hint song-hint--error" data-testid="song-search-error">
+                {error}
+              </div>
+            )}
+            {status === "done" && hits.length === 0 && <div className="song-hint">No lyrics found. Try fewer words, or time your own in Sync Studio.</div>}
+            {hits.map((h, i) => (
+              <div key={h.id} className={`song-hit ${h.synced ? "" : "song-hit--plain"}`} data-testid={`song-result-${i}`}>
+                <div className="song-hit-main">
+                  <span className="song-hit-title">{h.title}</span>
+                  <span className="song-hit-meta">
+                    {h.artist}
+                    {h.album ? ` · ${h.album}` : ""}
+                    {h.duration ? ` · ${formatDuration(h.duration)}` : ""}
+                  </span>
+                </div>
+                {h.instrumental ? (
+                  <span className="song-badge">instrumental</span>
+                ) : h.synced ? (
+                  <button type="button" className="transport-btn transport-btn--primary song-hit-btn" onClick={() => onPickSynced(h)} data-testid={`song-use-${i}`}>
+                    Use
+                  </button>
+                ) : (
+                  <button type="button" className="dock-btn song-hit-btn" onClick={() => onPickPlain(h)} title="No timing yet — tap it out in Sync Studio" data-testid={`song-studio-${i}`}>
+                    Time it
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+          <div className="song-hint">
+            Lyrics from <a href="https://lrclib.net" target="_blank" rel="noopener noreferrer">LRCLIB</a>, a community database. <strong>Use</strong> = word-timed; <strong>Time it</strong> = plain text you tap in Sync Studio.
+          </div>
+        </div>
+
+        {/* ── 2. backing track ── */}
+        <div className="sheet-section">
+          <div className="sheet-label">2 · Backing track</div>
+          <div className="song-source" data-testid="song-source">
+            {source.kind === "none" && <span className="song-hint">None yet — the virtual clock plays the lyrics silently.</span>}
+            {source.kind === "file" && (
+              <span>
+                File: <strong>{source.name}</strong>
+              </span>
+            )}
+            {source.kind === "youtube" && (
+              <span>
+                YouTube: <strong>{source.videoId}</strong>
+              </span>
+            )}
+            {source.kind !== "none" && (
+              <button type="button" className="mini-btn" onClick={onClearSource} data-testid="song-source-clear">
+                remove
+              </button>
+            )}
+          </div>
+          <div className="studio-row">
+            <label className="upload-btn">
+              <input
+                type="file"
+                accept="audio/*,video/*,.mp3,.mp4,.m4a,.wav,.ogg,.webm"
+                className="sr-only"
+                aria-label="Upload media file"
+                data-testid="song-file-input"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) onFile(f);
+                  e.target.value = "";
+                }}
+              />
+              <IconUpload /> Audio / video file
+            </label>
+            <a className="dock-btn" href={youtubeSearchUrl(ytQuery)} target="_blank" rel="noopener noreferrer" data-testid="song-youtube-search">
+              Find on YouTube ↗
+            </a>
+          </div>
+          <form
+            className="studio-row"
+            onSubmit={(e) => {
+              e.preventDefault();
+              submitYouTube();
+            }}
+          >
+            <input
+              className="song-search song-yt"
+              type="url"
+              inputMode="url"
+              value={ytInput}
+              onChange={(e) => setYtInput(e.target.value)}
+              placeholder="Paste a YouTube link…"
+              aria-label="YouTube link"
+              data-testid="youtube-url-input"
+            />
+            <button type="submit" className="dock-btn" data-testid="youtube-load">
+              Load
+            </button>
+          </form>
+          {ytError && (
+            <div className="song-hint song-hint--error" data-testid="youtube-error">
+              {ytError}
+            </div>
+          )}
+          <div className="song-hint">YouTube plays as the stage video; the stage lights follow the song's BPM there (browsers don't expose YouTube audio).</div>
+        </div>
+
+        {/* ── 3. timing ── */}
+        <div className="sheet-section">
+          <div className="sheet-label">3 · Lyric timing</div>
+          <div className="studio-row">
+            <span className="song-hint">Words early or late? Shift them:</span>
+            {[-0.5, -0.1, 0.1, 0.5].map((d) => (
+              <button key={d} type="button" className="mini-btn" onClick={() => onNudge(d)} aria-label={`Shift lyrics ${d > 0 ? "later" : "earlier"} by ${Math.abs(d)} seconds`} data-testid={`nudge-${d > 0 ? "plus" : "minus"}-${Math.abs(d) * 10}`}>
+                {d > 0 ? `+${d}` : d} s
+              </button>
+            ))}
+            <span className="song-offset" data-testid="lyric-offset">
+              {offset >= 0 ? "+" : ""}
+              {offset.toFixed(2)} s
+            </span>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}

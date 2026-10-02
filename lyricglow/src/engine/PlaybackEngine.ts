@@ -18,8 +18,10 @@ export interface Frame {
   generation: number;
 }
 
+import { mediaTransport, type Transport, type TransportEvent } from "./Transport";
+
 export type FrameCallback = (frame: Readonly<Frame>) => void;
-export type SourceKind = "demo" | "media";
+export type SourceKind = "demo" | "media" | "youtube";
 
 export interface PlaybackSnapshot {
   playing: boolean;
@@ -42,8 +44,8 @@ export class PlaybackEngine {
     this.onBeforePlay = fn;
   }
 
-  private media: HTMLMediaElement | null = null;
-  private mediaCleanup: (() => void) | null = null;
+  private transport: Transport | null = null;
+  private transportCleanup: (() => void) | null = null;
   private demoDuration = 60;
   private songTime = 0;
   private playingFlag = false;
@@ -82,7 +84,7 @@ export class PlaybackEngine {
       ended: this.ended,
       duration: this.duration,
       rate: this.frame.rate,
-      sourceKind: this.media ? "media" : "demo",
+      sourceKind: this.transport ? this.transport.kind : "demo",
       generation: this.frame.generation,
     };
   }
@@ -145,13 +147,13 @@ export class PlaybackEngine {
     f.dt = dt;
     f.playing = this.playingFlag;
 
-    if (this.media) {
-      const el = this.media;
-      const t = el.currentTime;
+    if (this.transport) {
+      const tr = this.transport;
+      const t = tr.time();
       if (this.playingFlag && t === this.lastMediaTime) {
-        // browser hasn't advanced currentTime yet: extrapolate (bounded)
+        // source hasn't advanced its clock yet: extrapolate (bounded)
         const est = t + ((now - this.lastMediaNow) / 1000) * f.rate;
-        f.time = Math.min(est, t + 0.25);
+        f.time = Math.min(est, t + tr.extrapolation);
       } else {
         const wasPlaying = this.playingFlag && this.lastMediaTime >= 0;
         this.lastMediaTime = t;
@@ -184,7 +186,7 @@ export class PlaybackEngine {
   // ── sources ────────────────────────────────────────────────────────────
   setDemoDuration(d: number): void {
     this.demoDuration = Math.max(1, d);
-    if (!this.media) {
+    if (!this.transport) {
       this.duration = this.demoDuration;
       if (this.songTime > this.duration) this.songTime = this.duration;
       this.publish();
@@ -192,70 +194,70 @@ export class PlaybackEngine {
     }
   }
 
+  /** convenience for <audio>/<video> elements */
   attachMedia(el: HTMLMediaElement | null): void {
-    if (el === this.media) return;
-    this.mediaCleanup?.();
-    this.mediaCleanup = null;
-    this.media = el;
+    if (el === null) {
+      if (this.transport?.kind === "media") this.attachTransport(null);
+      return;
+    }
+    if (this.transport?.element === el) return;
+    this.attachTransport(mediaTransport(el));
+  }
+
+  attachTransport(tr: Transport | null): void {
+    if (tr === this.transport) return;
+    this.transportCleanup?.();
+    this.transportCleanup = null;
+    this.transport?.dispose?.();
+    this.transport = tr;
     this.lastMediaTime = -1;
     this.frame.generation++;
 
-    if (el) {
-      el.playbackRate = this.frame.rate;
-      this.playingFlag = !el.paused && !el.ended;
-      this.ended = el.ended;
-      this.duration = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 0;
-
-      const onPlay = () => {
-        this.playingFlag = true;
-        this.ended = false;
-        this.lastMediaTime = -1;
-        this.publish();
-        this.schedule();
-      };
-      const onPause = () => {
-        this.playingFlag = false;
-        this.publish();
-        this.requestFrame();
-      };
-      const onEnded = () => {
-        this.playingFlag = false;
-        this.ended = true;
-        this.publish();
-        this.requestFrame();
-      };
-      const onDuration = () => {
-        this.duration = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 0;
-        this.publish();
-      };
-      const onRate = () => {
-        if (el.playbackRate > 0 && el.playbackRate !== this.frame.rate) {
-          this.frame.rate = el.playbackRate;
-          this.publish();
+    if (tr) {
+      tr.setRate(this.frame.rate);
+      this.playingFlag = tr.playing();
+      this.ended = tr.ended();
+      this.duration = tr.duration();
+      this.transportCleanup = tr.subscribe((ev: TransportEvent) => {
+        switch (ev) {
+          case "play":
+            this.playingFlag = true;
+            this.ended = false;
+            this.lastMediaTime = -1;
+            this.publish();
+            this.schedule();
+            break;
+          case "pause":
+            this.playingFlag = false;
+            this.publish();
+            this.requestFrame();
+            break;
+          case "ended":
+            this.playingFlag = false;
+            this.ended = true;
+            this.publish();
+            this.requestFrame();
+            break;
+          case "duration":
+            this.duration = tr.duration();
+            this.publish();
+            break;
+          case "rate": {
+            const r = tr.rate();
+            if (r > 0 && r !== this.frame.rate) {
+              this.frame.rate = r;
+              this.publish();
+            }
+            break;
+          }
+          case "seek":
+            this.lastMediaTime = -1;
+            this.frame.generation++;
+            this.publish();
+            this.requestFrame();
+            break;
         }
-      };
-      const onSeek = () => {
-        this.lastMediaTime = -1;
-        this.frame.generation++;
-        this.publish();
-        this.requestFrame();
-      };
-      el.addEventListener("play", onPlay);
-      el.addEventListener("pause", onPause);
-      el.addEventListener("ended", onEnded);
-      el.addEventListener("durationchange", onDuration);
-      el.addEventListener("loadedmetadata", onDuration);
-      el.addEventListener("ratechange", onRate);
-      el.addEventListener("seeking", onSeek);
-      this.mediaCleanup = () => {
-        el.removeEventListener("play", onPlay);
-        el.removeEventListener("pause", onPause);
-        el.removeEventListener("ended", onEnded);
-        el.removeEventListener("durationchange", onDuration);
-        el.removeEventListener("loadedmetadata", onDuration);
-        el.removeEventListener("ratechange", onRate);
-        el.removeEventListener("seeking", onSeek);
-      };
+      });
     } else {
       this.playingFlag = false;
       this.ended = false;
@@ -267,17 +269,19 @@ export class PlaybackEngine {
   }
 
   get mediaElement(): HTMLMediaElement | null {
-    return this.media;
+    return this.transport?.element ?? null;
+  }
+
+  get currentTransport(): Transport | null {
+    return this.transport;
   }
 
   // ── transport ──────────────────────────────────────────────────────────
   play(): void {
     if (this.ended) this.seek(0);
     this.onBeforePlay?.();
-    if (this.media) {
-      void this.media.play().catch(() => {
-        /* autoplay policy or decode error: snapshot stays paused */
-      });
+    if (this.transport) {
+      this.transport.play();
     } else {
       this.playingFlag = true;
       this.ended = false;
@@ -288,8 +292,8 @@ export class PlaybackEngine {
   }
 
   pause(): void {
-    if (this.media) {
-      this.media.pause();
+    if (this.transport) {
+      this.transport.pause();
     } else {
       this.playingFlag = false;
       this.publish();
@@ -305,8 +309,8 @@ export class PlaybackEngine {
   seek(t: number): void {
     const target = Math.max(0, Math.min(t, this.duration || t));
     this.frame.generation++;
-    if (this.media) {
-      this.media.currentTime = target;
+    if (this.transport) {
+      this.transport.seek(target);
       this.lastMediaTime = -1;
       this.frame.time = target;
     } else {
@@ -327,7 +331,7 @@ export class PlaybackEngine {
     const rate = Math.max(MIN_RATE, Math.min(MAX_RATE, r));
     if (rate === this.frame.rate) return;
     this.frame.rate = rate;
-    if (this.media) this.media.playbackRate = rate;
+    if (this.transport) this.transport.setRate(rate);
     this.publish();
     this.requestFrame();
   }
@@ -337,9 +341,10 @@ export class PlaybackEngine {
     if (this.rafId) cancelAnimationFrame(this.rafId);
     this.rafId = 0;
     this.lastNow = 0;
-    this.mediaCleanup?.();
-    this.mediaCleanup = null;
-    this.media = null;
+    this.transportCleanup?.();
+    this.transportCleanup = null;
+    this.transport?.dispose?.();
+    this.transport = null;
     this.playingFlag = false;
     this.publish();
   }

@@ -79,3 +79,10 @@ export function IconSparkle() {
     </svg>
   );
 }
+export function IconSearch() {
+  return (
+    <svg {...base}>
+      <path d="M10 3a7 7 0 1 1-4.9 12l-3.6 3.6-1.4-1.4L3.7 13.6A7 7 0 0 1 10 3zm0 2a5 5 0 1 0 0 10 5 5 0 0 0 0-10z" />
+    </svg>
+  );
+}

@@ -18,10 +18,19 @@ npm run check:model  # fixture checks: syllables, LRC, round-trips, pitch, scori
 |---|---|
 | **Playback** | Local MP3/MP4 via `URL.createObjectURL` (video becomes the full‑stage background). A virtual clock plays the demo without any media. Play / pause / restart / seek / tempo 0.5–2×. |
 | **Karaoke animation** | Syllable‑level data; words render joined ("Softly", not "Soft ly"). Each syllable reveals left→right over its own duration (slow syllables slowly, fast ones fast). The cue ball arcs to the next syllable `0.32 s / rate` ahead of the voice and bounces once per syllable. Finished words drop and leave a translucent ghost behind; the last word of each line gets a bounce/stretch/shake peak. Lines glide between slots. |
+| **Find a song** | **Find song** opens a sheet: search synced lyrics on [LRCLIB](https://lrclib.net) (free, community, no key) and load them with one tap; plain-text results jump into Sync Studio. Add a backing track from a file or **paste a YouTube link** (a "Find on YouTube ↗" button pre-fills the search); the video becomes the stage and the karaoke syncs to its clock. ±0.1/±0.5 s lyric-timing nudge. |
 | **Song sync** | Import `.lrc` (standard `[mm:ss.xx]` and enhanced `<mm:ss.xx>` word timing, Walaoke `M:`/`F:`/`D:` prefixes, `[v:]` tags, `[Chorus]`‑style section markers, `[offset:]`) or LyricGlow `.json`. Plain‑timed lines get syllable timing from a built‑in English syllable estimator. Export enhanced LRC or lossless JSON. |
 | **Sync Studio** | Paste lyrics, pick voices per line, play the song and tap <kbd>Space</kbd> on every syllable (<kbd>Enter</kbd> ends a line, <kbd>Backspace</kbd> undoes, <kbd>Esc</kbd> play/pause, <kbd>,</kbd>/<kbd>.</kbd> adjust tap latency). Review with ±10/±50 ms nudge, re‑tap from any line, download, or use it in the player. The stage previews your timing live. |
 | **Mic & scoring** | Web Audio pitch detection (McLeod Pitch Method, hand‑written). Pitch lane under the lyric with target bars per syllable, folded to one octave so your register doesn't matter. Per‑syllable pitch + timing scoring (timing‑only when a syllable has no note), combo multiplier, line ratings, S–E grade with a "Partial" flag. Easy/Normal/Hard tolerances and a mic‑latency slider. Nothing from the mic is routed to the speakers. |
 | **Stage** | Audio‑reactive footlights and bass‑pulsing spotlights/vignette (from an analyser on your media, or a BPM‑synced pulse for the demo), 3‑2‑1 count‑in before lines after a gap, section title cards with a light sweep, ember bursts on peak words, a golden finale, fullscreen performance mode that hides the chrome after 3 s idle. Dark/light themes; landscape is the primary performance layout, portrait stays usable. Honors `prefers-reduced-motion` plus an in‑app toggle. |
+
+### Typical flow for a real song
+
+1. **Find song** → type title + artist → **Use** on a word-timed result (or **Time it** on a plain one → Sync Studio).
+2. Backing track: **Audio / video file** from your device, *or* **Find on YouTube ↗** → copy the video link → paste → **Load**.
+3. ▶ Play. If the words run early/late, nudge in step 3 of the sheet. Mic on, sing.
+
+YouTube notes: the player must stay visible (YouTube terms), the stage lights follow the song's BPM rather than the audio (browsers don't expose YouTube's sound), tempo snaps to YouTube's rates (0.5/0.75/1/1.25/1.5/2), and videos whose uploader disabled embedding show an error — try another upload.
 
 ### Keyboard (player)
 
@@ -63,13 +72,14 @@ interface Track { title; artist; bpm; lines; offset?; duration?; beatOffset?; se
 
 ```
 src/
-  engine/      PlaybackEngine (single rAF clock for demo + media, snapshots via useSyncExternalStore)
+  engine/      PlaybackEngine (single rAF clock; Transport = <audio>/<video> or YouTube; snapshots via useSyncExternalStore)
+               Transport.ts (media adapter) · youtube.ts (IFrame API loader, URL parser, transport)
                KaraokeSession (active line, count‑ins, sections, scoring) · AudioGraph · PitchTracker
                pitch.ts (MPM) · scoring.ts (pure) · beat.ts
-  model/       lyrics types/helpers · normalize · timeline · syllables · lrc · trackIO
+  model/       lyrics types/helpers · normalize · timeline · syllables · lrc · trackIO · lrclib (search client)
   components/  Karaoke (imperative per‑frame DOM writes, rect cache) · CueBall math · PitchLane
                SpectrumCanvas · ParticleLayer · CountIn · SectionCard · ScoreHud · GradeScreen
-               Header · ControlsDock · ProgressRow · MediaElement · LibraryButtons · MicControls
+               Header · ControlsDock · ProgressRow · MediaElement · YouTubeStage · SongPanel · LibraryButtons · MicControls
                SyncStudio/ (pure reducer + UI)
   hooks/       useOrientation · useReducedMotion · useFullscreen · useIdleHide · useHotkeys
 ```

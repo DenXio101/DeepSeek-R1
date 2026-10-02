@@ -10,6 +10,10 @@ import { useIsLandscape } from "./hooks/useOrientation";
 import Header, { type Theme } from "./components/Header";
 import ControlsDock from "./components/ControlsDock";
 import MediaElement, { type MediaKind } from "./components/MediaElement";
+import YouTubeStage from "./components/YouTubeStage";
+import SongPanel, { type BackingSource } from "./components/SongPanel";
+import { studioTextFromHit, trackFromHit, type LyricsSearchHit } from "./model/lrclib";
+import { IconSearch } from "./components/Icons";
 import LibraryButtons from "./components/LibraryButtons";
 import SyncStudio from "./components/SyncStudio/SyncStudio";
 import { initStudio, studioReducer } from "./components/SyncStudio/studioReducer";
@@ -35,11 +39,6 @@ import type { Voice } from "./lyrics";
 import { importLyricsText } from "./model/trackIO";
 import "./styles.css";
 
-interface MediaState {
-  url: string;
-  kind: MediaKind;
-  name: string;
-}
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>("dark");
@@ -58,7 +57,9 @@ export default function App() {
   const onPeak = useCallback((p: Point, voice: Voice) => fxRef.current?.emit(p, voice), []);
   const fullscreen = useFullscreen();
   const shownTrack = mode === "studio" && previewTrack ? previewTrack : track;
-  const [media, setMedia] = useState<MediaState | null>(null);
+  const [source, setSource] = useState<BackingSource>({ kind: "none" });
+  const [songOpen, setSongOpen] = useState(false);
+  const media = source.kind === "file" ? source : null;
   const isLandscape = useIsLandscape();
 
   const timeline = useMemo(() => buildTimeline(shownTrack), [shownTrack]);
@@ -116,7 +117,7 @@ export default function App() {
       m: () => toggleMic(),
       r: () => engine.restart(),
     },
-    mode === "perform",
+    mode === "perform" && !songOpen,
   );
 
   const singAgain = useCallback(() => {
@@ -145,17 +146,64 @@ export default function App() {
   }, [engine, timeline]);
 
   // object URL lifecycle
+  const fileUrl = media?.url;
   useEffect(() => () => {
-    if (media) URL.revokeObjectURL(media.url);
-  }, [media]);
+    if (fileUrl) URL.revokeObjectURL(fileUrl);
+  }, [fileUrl]);
 
   const handleFileUpload = useCallback((file: File) => {
     // create the context inside the gesture that chose the file
     if (visualizer) graph.ensureContext();
     const url = URL.createObjectURL(file);
     const kind: MediaKind = file.type.startsWith("video/") || /\.(mp4|webm|mov|m4v)$/i.test(file.name) ? "video" : "audio";
-    setMedia({ url, kind, name: file.name });
+    setSource({ kind: "file", url, mediaKind: kind, name: file.name });
+    setSongOpen(false);
   }, [graph, visualizer]);
+
+  const handleYouTube = useCallback((videoId: string) => {
+    setSource({ kind: "youtube", videoId });
+    setSongOpen(false);
+    setNotice({ kind: "info", text: "Loading YouTube video… press ▶ when it appears." });
+  }, []);
+
+  const clearSource = useCallback(() => {
+    setSource({ kind: "none" });
+  }, []);
+
+  const loadTrack = useCallback(
+    (t: Track, note: string) => {
+      setTrack(t);
+      engine.pause();
+      engine.seek(0);
+      setNotice({ kind: "info", text: note });
+    },
+    [engine],
+  );
+
+  const pickSynced = useCallback(
+    (hit: LyricsSearchHit) => {
+      try {
+        const t = trackFromHit(hit);
+        loadTrack(t, `Loaded "${hit.title}" — ${t.lines.length} timed lines. Now add a backing track.`);
+      } catch (err: unknown) {
+        setNotice({ kind: "error", text: err instanceof Error ? err.message : "Couldn't use those lyrics." });
+      }
+    },
+    [loadTrack],
+  );
+
+  const pickPlain = useCallback((hit: LyricsSearchHit) => {
+    dispatchStudio({ type: "setText", text: studioTextFromHit(hit) });
+    dispatchStudio({ type: "setMeta", title: hit.title, artist: hit.artist });
+    dispatchStudio({ type: "parse" });
+    setSongOpen(false);
+    setMode("studio");
+    setNotice({ kind: "info", text: `"${hit.title}" has no timing yet — add a backing track, then tap it out in Sync Studio.` });
+  }, []);
+
+  const nudgeLyrics = useCallback((delta: number) => {
+    setTrack((t) => ({ ...t, offset: Math.round(((t.offset ?? 0) + delta) * 100) / 100 }));
+  }, []);
 
   const handleImportFile = useCallback(
     (file: File) => {
@@ -202,7 +250,7 @@ export default function App() {
       className={`app-root theme-${theme}`}
       data-theme={theme}
       data-landscape={String(isLandscape)}
-      data-media={media?.kind ?? "none"}
+      data-media={source.kind === "file" ? source.mediaKind : source.kind}
       data-mode={mode}
       data-motion={reducedMotion ? "reduced" : "full"}
       data-chrome={chromeHidden ? "hidden" : "visible"}
@@ -217,7 +265,16 @@ export default function App() {
         <div className="stage-spotlight stage-spotlight--center" />
       </div>
 
-      {media && <MediaElement key={media.url} engine={engine} kind={media.kind} src={media.url} />}
+      {media && <MediaElement key={media.url} engine={engine} kind={media.mediaKind} src={media.url} />}
+      {source.kind === "youtube" && (
+        <YouTubeStage
+          key={source.videoId}
+          engine={engine}
+          videoId={source.videoId}
+          onError={(m) => setNotice({ kind: "error", text: m })}
+          onReady={() => setNotice({ kind: "info", text: "YouTube ready — press ▶ to sing." })}
+        />
+      )}
 
       <SpectrumCanvas engine={engine} graph={graph} timeline={timeline} visible={visualizer} reducedMotion={reducedMotion} theme={theme} />
 
@@ -263,7 +320,7 @@ export default function App() {
 
       <Header
         title={shownTrack.title}
-        artist={media ? `${shownTrack.artist || "—"} · ${media.name}` : shownTrack.artist}
+        artist={media ? `${shownTrack.artist || "—"} · ${media.name}` : source.kind === "youtube" ? `${shownTrack.artist || "—"} · YouTube` : shownTrack.artist}
         section={activeSection}
         theme={theme}
         onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
@@ -321,6 +378,19 @@ export default function App() {
         </button>
       </Header>
 
+      <SongPanel
+        open={songOpen}
+        onClose={() => setSongOpen(false)}
+        track={track}
+        source={source}
+        onPickSynced={pickSynced}
+        onPickPlain={pickPlain}
+        onFile={handleFileUpload}
+        onYouTube={handleYouTube}
+        onClearSource={clearSource}
+        onNudge={nudgeLyrics}
+      />
+
       {notice && (
         <div
           className={`notice notice--${notice.kind}`}
@@ -346,6 +416,9 @@ export default function App() {
         />
       ) : (
         <ControlsDock engine={engine} playback={playback} onFileUpload={handleFileUpload}>
+          <button type="button" className="dock-btn dock-btn--accent" onClick={() => setSongOpen(true)} aria-label="Find a song" data-testid="btn-find-song">
+            <IconSearch /> Find song
+          </button>
           <LibraryButtons track={track} onImportFile={handleImportFile} />
           <MicControls
             mic={mic}

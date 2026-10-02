@@ -10,6 +10,8 @@ import { lineText } from "../src/lyrics";
 import { detectPitchMPM, hzToMidi, pitchClassDistance } from "../src/engine/pitch";
 import { createScoreState, applyResult, scoreSyllable, lineRating, gradeFor, summarize } from "../src/engine/scoring";
 import type { PitchSample } from "../src/engine/PitchTracker";
+import { parseYouTubeId, youtubeTransport, type YTPlayer } from "../src/engine/youtube";
+import { trackFromHit, type LyricsSearchHit } from "../src/model/lrclib";
 
 let failures = 0;
 const ok = (cond: boolean, msg: string) => {
@@ -165,6 +167,56 @@ applyResult(st, tl.flat[5], silent);
 ok(st.combo === 0 && st.maxCombo === 5, `miss resets combo (max kept ${st.maxCombo})`);
 const sum = summarize(st, tl);
 ok(sum.partial && sum.coverage < 0.1, `partial summary when few syllables evaluated (coverage ${(sum.coverage * 100).toFixed(0)}%)`);
+
+console.log("\nyoutube");
+const ids: [string, string | null][] = [
+  ["https://www.youtube.com/watch?v=dQw4w9WgXcQ", "dQw4w9WgXcQ"],
+  ["https://youtu.be/dQw4w9WgXcQ?t=42", "dQw4w9WgXcQ"],
+  ["https://m.youtube.com/watch?feature=share&v=dQw4w9WgXcQ", "dQw4w9WgXcQ"],
+  ["https://www.youtube.com/shorts/dQw4w9WgXcQ", "dQw4w9WgXcQ"],
+  ["https://music.youtube.com/watch?v=dQw4w9WgXcQ&list=RD", "dQw4w9WgXcQ"],
+  ["youtube.com/embed/dQw4w9WgXcQ", "dQw4w9WgXcQ"],
+  ["dQw4w9WgXcQ", "dQw4w9WgXcQ"],
+  ["https://example.com/watch?v=dQw4w9WgXcQ", null],
+  ["not a link", null],
+  ["", null],
+];
+for (const [inp, want] of ids) ok(parseYouTubeId(inp) === want, `parseYouTubeId(${JSON.stringify(inp)}) → ${parseYouTubeId(inp)}`);
+const fake = { t: 0, state: 2, rate: 1, played: 0, paused: 0, seeks: [] as number[] };
+const fp: YTPlayer = {
+  playVideo: () => { fake.played++; fake.state = 1; },
+  pauseVideo: () => { fake.paused++; fake.state = 2; },
+  seekTo: (s) => { fake.seeks.push(s); fake.t = s; },
+  getCurrentTime: () => fake.t,
+  getDuration: () => 213,
+  getPlayerState: () => fake.state,
+  getPlaybackRate: () => fake.rate,
+  setPlaybackRate: (r) => { fake.rate = r; },
+  getAvailablePlaybackRates: () => [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2],
+  destroy: () => {},
+};
+const tr = youtubeTransport(fp);
+const evs: string[] = [];
+tr.subscribe((e) => evs.push(e));
+tr.play(); tr.setRate(1.3); tr.seek(30.5); tr.notify("pause");
+ok(fake.played === 1 && tr.playing(), "transport.play → playVideo, playing()");
+ok(fake.rate === 1.25 && tr.rate() === 1.25, `rate 1.3 snaps to nearest available (${fake.rate})`);
+ok(fake.seeks[0] === 30.5 && tr.time() === 30.5 && evs.includes("seek"), "seek forwards to player and emits seek");
+ok(tr.duration() === 213 && evs.includes("pause"), "duration + notify");
+ok(tr.kind === "youtube" && tr.extrapolation > 0.25, "youtube transport allows longer extrapolation");
+
+console.log("\nlrclib");
+const hit: LyricsSearchHit = {
+  id: 1, title: "Embers & Light", artist: "Demo", album: "", duration: 60, synced: true, instrumental: false, plainLyrics: "",
+  syncedLyrics: "[00:02.00] Softly now the light fades\n[00:06.00] Lanterns drift above the city\n[00:10.50] Morning came so quiet here\n",
+};
+const ht = trackFromHit(hit);
+ok(ht.title === "Embers & Light" && ht.artist === "Demo", `trackFromHit meta ${ht.title} / ${ht.artist}`);
+ok(ht.lines.length === 3 && ht.lines[0].syllables.length === 6, `3 lines, first has 6 syllables (${ht.lines[0].syllables.length})`);
+ok(ht.duration === 60, `duration from hit (${ht.duration})`);
+let threw = false;
+try { trackFromHit({ ...hit, synced: false, syncedLyrics: "" }); } catch { threw = true; }
+ok(threw, "plain hit refuses trackFromHit");
 
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);
