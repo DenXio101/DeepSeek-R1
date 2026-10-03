@@ -3,6 +3,7 @@ import type { Track } from "../lyrics";
 import { formatDuration, searchLyrics, type LyricsSearchHit } from "../model/lrclib";
 import { parseYouTubeId, youtubeSearchUrl } from "../engine/youtube";
 import { searchYouTube, youtubeApiKey, type YouTubeHit } from "../model/youtubeSearch";
+import { fitsDuration, sortHitsForBacking, type VideoMeta } from "../model/songMatch";
 import { IconUpload } from "./Icons";
 
 export type BackingSource =
@@ -18,16 +19,20 @@ interface Props {
   onPickSynced: (hit: LyricsSearchHit) => void;
   onPickPlain: (hit: LyricsSearchHit) => void;
   onFile: (file: File) => void;
-  onYouTube: (videoId: string) => void;
+  onYouTube: (videoId: string, meta?: VideoMeta) => void;
   onClearSource: () => void;
   onNudge: (deltaSeconds: number) => void;
+  /** length of the loaded backing track in seconds (0 = unknown) */
+  backingDuration: number;
+  /** focus the lyrics box when opened (e.g. from the mismatch banner) */
+  focusLyrics?: boolean;
 }
 
 /**
  * "Find a song": search synced lyrics (LRCLIB), choose a backing track
  * (local file or YouTube link) and fine-tune lyric timing.
  */
-export default function SongPanel({ open, onClose, track, source, onPickSynced, onPickPlain, onFile, onYouTube, onClearSource, onNudge }: Props) {
+export default function SongPanel({ open, onClose, track, source, onPickSynced, onPickPlain, onFile, onYouTube, onClearSource, onNudge, backingDuration, focusLyrics }: Props) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<LyricsSearchHit[]>([]);
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
@@ -94,7 +99,7 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
 
   useEffect(() => {
     if (open) window.setTimeout(() => inputRef.current?.focus(), 50);
-  }, [open]);
+  }, [open, focusLyrics]);
 
   // auto-suggest videos for the current song whenever it changes while the panel is open
   const autoQuery = `${track.title} ${track.artist !== "Unknown artist" ? track.artist : ""} karaoke`.trim();
@@ -155,10 +160,17 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
               </div>
             )}
             {status === "done" && hits.length === 0 && <div className="song-hint">No lyrics found. Try fewer words, or time your own in Sync Studio.</div>}
-            {hits.map((h, i) => (
-              <div key={h.id} className={`song-hit ${h.synced ? "" : "song-hit--plain"}`} data-testid={`song-result-${i}`}>
+            {sortHitsForBacking(hits, backingDuration).map((h, i) => (
+              <div key={h.id} className={`song-hit ${h.synced ? "" : "song-hit--plain"} ${fitsDuration(h, backingDuration) ? "song-hit--fits" : ""}`} data-testid={`song-result-${i}`}>
                 <div className="song-hit-main">
-                  <span className="song-hit-title">{h.title}</span>
+                  <span className="song-hit-title">
+                    {h.title}
+                    {fitsDuration(h, backingDuration) && (
+                      <span className="song-fit-badge" data-testid={`song-fit-${i}`}>
+                        ✓ matches length
+                      </span>
+                    )}
+                  </span>
                   <span className="song-hit-meta">
                     {h.artist}
                     {h.album ? ` · ${h.album}` : ""}
@@ -187,6 +199,11 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
         {/* ── 2. backing track ── */}
         <div className="sheet-section">
           <div className="sheet-label">2 · Backing track</div>
+          <div className={`song-loaded ${track.source === "demo" ? "song-loaded--demo" : ""}`} data-testid="lyrics-loaded">
+            Lyrics loaded: <strong>{track.title}</strong>
+            {track.artist && track.artist !== "Unknown artist" ? ` — ${track.artist}` : ""}
+            {track.source === "demo" ? " (built-in demo — pick your song in step 1)" : ""}
+          </div>
           <div className="song-source" data-testid="song-source">
             {source.kind === "none" && <span className="song-hint">None yet — the virtual clock plays the lyrics silently.</span>}
             {source.kind === "file" && (
@@ -259,7 +276,7 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
                 )}
                 {ytStatus === "done" && ytHits.length === 0 && <div className="song-hint">No videos found — try other words or paste a link below.</div>}
                 {ytHits.map((h, i) => (
-                  <button key={h.videoId} type="button" className="yt-hit" onClick={() => onYouTube(h.videoId)} data-testid={`youtube-result-${i}`}>
+                  <button key={h.videoId} type="button" className="yt-hit" onClick={() => onYouTube(h.videoId, { title: h.title, channel: h.channel, duration: h.duration })} data-testid={`youtube-result-${i}`}>
                     {h.thumbnail ? <img className="yt-thumb" src={h.thumbnail} alt="" loading="lazy" /> : <span className="yt-thumb" />}
                     <span className="yt-hit-main">
                       <span className="yt-hit-title">{h.title}</span>

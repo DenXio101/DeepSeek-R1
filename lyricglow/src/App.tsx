@@ -12,7 +12,9 @@ import ControlsDock from "./components/ControlsDock";
 import MediaElement, { type MediaKind } from "./components/MediaElement";
 import YouTubeStage from "./components/YouTubeStage";
 import SongPanel, { type BackingSource } from "./components/SongPanel";
-import { studioTextFromHit, trackFromHit, type LyricsSearchHit } from "./model/lrclib";
+import { searchLyrics, studioTextFromHit, trackFromHit, type LyricsSearchHit } from "./model/lrclib";
+import { cleanVideoTitle, pickLyricsForVideo, trackMatchesVideo, type VideoMeta } from "./model/songMatch";
+import { fetchVideoMeta, youtubeApiKey } from "./model/youtubeSearch";
 import { IconSearch } from "./components/Icons";
 import LibraryButtons from "./components/LibraryButtons";
 import SyncStudio from "./components/SyncStudio/SyncStudio";
@@ -64,6 +66,14 @@ export default function App() {
   const shownTrack = mode === "studio" && previewTrack ? previewTrack : track;
   const [source, setSource] = useState<BackingSource>({ kind: "none" });
   const [songOpen, setSongOpen] = useState(false);
+  const [songFocusLyrics, setSongFocusLyrics] = useState(0);
+  const [backingMeta, setBackingMeta] = useState<VideoMeta | null>(null);
+  const autoMatchRef = useRef(0);
+  // latest track for async callbacks
+  const trackRef = useRef<Track | null>(null);
+  useEffect(() => {
+    trackRef.current = track;
+  }, [track]);
   const media = source.kind === "file" ? source : null;
   const isLandscape = useIsLandscape();
 
@@ -179,17 +189,58 @@ export default function App() {
     const url = URL.createObjectURL(file);
     const kind: MediaKind = file.type.startsWith("video/") || /\.(mp4|webm|mov|m4v)$/i.test(file.name) ? "video" : "audio";
     setSource({ kind: "file", url, mediaKind: kind, name: file.name });
+    setBackingMeta(null);
+    autoMatchRef.current++;
     setSongOpen(false);
   }, [graph]);
 
-  const handleYouTube = useCallback((videoId: string) => {
-    setSource({ kind: "youtube", videoId });
-    setSongOpen(false);
-    setNotice({ kind: "info", text: "Loading YouTube video… press ▶ when it appears." });
-  }, []);
+  const handleYouTube = useCallback(
+    (videoId: string, meta?: VideoMeta) => {
+      setSource({ kind: "youtube", videoId });
+      setSongOpen(false);
+      setBackingMeta(meta ?? null);
+      setNotice({ kind: "info", text: "Loading YouTube video… press ▶ when it appears." });
+
+      // auto-match lyrics unless the loaded track already is this song
+      const run = ++autoMatchRef.current;
+      const key = youtubeApiKey();
+      const resolveMeta: Promise<VideoMeta | null> = meta ? Promise.resolve(meta) : key ? fetchVideoMeta(videoId, key) : Promise.resolve(null);
+      void resolveMeta.then(async (m) => {
+        if (run !== autoMatchRef.current) return;
+        if (!m) return;
+        setBackingMeta(m);
+        const current = trackRef.current;
+        if (current && current.source !== "demo" && trackMatchesVideo(current.title, current.artist, m)) return;
+        const { query, title } = cleanVideoTitle(m.title, m.channel);
+        try {
+          const hits = await searchLyrics(query || title);
+          if (run !== autoMatchRef.current) return;
+          const best = pickLyricsForVideo(hits, m);
+          if (best) {
+            const t = trackFromHit(best);
+            setTrack(t);
+            engine.seek(0);
+            setNotice({ kind: "info", text: `Lyrics auto-matched: ${best.title} — ${best.artist}. Wrong song? Find song → step 1.` });
+          } else {
+            setNotice({ kind: "error", text: `No timed lyrics found for "${title}". Search them in Find song → step 1, or Time it in Sync Studio.` });
+          }
+        } catch {
+          setNotice({ kind: "error", text: "Couldn't look up lyrics for this video — search them in Find song → step 1." });
+        }
+      });
+    },
+    [engine],
+  );
 
   const clearSource = useCallback(() => {
     setSource({ kind: "none" });
+    setBackingMeta(null);
+    autoMatchRef.current++;
+  }, []);
+
+  const openSongLyrics = useCallback(() => {
+    setSongFocusLyrics((n) => n + 1);
+    setSongOpen(true);
   }, []);
 
   const loadTrack = useCallback(
@@ -294,7 +345,7 @@ export default function App() {
           engine={engine}
           videoId={source.videoId}
           onError={(m) => setNotice({ kind: "error", text: m })}
-          onReady={() => setNotice({ kind: "info", text: "YouTube ready — press ▶ to sing." })}
+          onReady={() => setNotice((prev) => (prev && !prev.text.startsWith("Loading YouTube") ? prev : { kind: "info", text: "YouTube ready — press ▶ to sing." }))}
         />
       )}
 
@@ -327,6 +378,17 @@ export default function App() {
           />
         )}
       </div>
+
+      {mode === "perform" && source.kind !== "none" && track.source === "demo" && !songOpen && (
+        <div className="lyrics-mismatch" role="status" data-testid="lyrics-mismatch">
+          <span>
+            Showing the <strong>demo lyrics</strong> — they won't match this song.
+          </span>
+          <button type="button" className="dock-btn dock-btn--accent" onClick={openSongLyrics} data-testid="lyrics-mismatch-fix">
+            Find this song's lyrics →
+          </button>
+        </div>
+      )}
 
       {session.score && mode === "perform" && <ScoreHud score={session.score} />}
 
@@ -411,6 +473,8 @@ export default function App() {
         onYouTube={handleYouTube}
         onClearSource={clearSource}
         onNudge={nudgeLyrics}
+        backingDuration={backingMeta?.duration || (source.kind === "file" ? playback.duration : 0)}
+        focusLyrics={songFocusLyrics > 0}
       />
 
       {notice && (

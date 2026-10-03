@@ -12,6 +12,7 @@ import { createScoreState, applyResult, scoreSyllable, lineRating, gradeFor, sum
 import type { PitchSample } from "../src/engine/PitchTracker";
 import { parseYouTubeId, youtubeTransport, type YTPlayer } from "../src/engine/youtube";
 import { trackFromHit, type LyricsSearchHit } from "../src/model/lrclib";
+import { cleanVideoTitle, pickLyricsForVideo, trackMatchesVideo } from "../src/model/songMatch";
 
 let failures = 0;
 const ok = (cond: boolean, msg: string) => {
@@ -217,6 +218,24 @@ ok(ht.duration === 60, `duration from hit (${ht.duration})`);
 let threw = false;
 try { trackFromHit({ ...hit, synced: false, syncedLyrics: "" }); } catch { threw = true; }
 ok(threw, "plain hit refuses trackFromHit");
+
+console.log("\nsong matching");
+const c1 = cleanVideoTitle("Lady Gaga - Bad Romance (Official Music Video)", "LadyGagaVEVO");
+ok(c1.title === "Bad Romance" && c1.artist === "Lady Gaga", `clean: ${JSON.stringify(c1)}`);
+const c2 = cleanVideoTitle("Bad Romance", "Lady Gaga - Topic");
+ok(c2.title === "Bad Romance" && c2.artist === "Lady Gaga", `topic channel: ${JSON.stringify(c2)}`);
+const c3 = cleanVideoTitle("Lady Gaga - Paparazzi (Lyrics)", "MusiCat");
+ok(c3.title === "Paparazzi" && c3.artist === "Lady Gaga", `lyrics video: ${JSON.stringify(c3)}`);
+const c4 = cleanVideoTitle("LADY GAGA (Video Oficial) - Peso Pluma", "Peso Pluma");
+ok(c4.artist.toLowerCase() === "peso pluma", `flip when channel names 2nd part: ${JSON.stringify(c4)}`);
+const c5 = cleanVideoTitle("Hallelujah [Official Audio] HD", "Jeff Buckley - Topic");
+ok(c5.title === "Hallelujah" && c5.artist === "Jeff Buckley", `brackets/HD: ${JSON.stringify(c5)}`);
+const mk2 = (id: number, title: string, artist: string, duration: number, synced = true): LyricsSearchHit => ({ id, title, artist, album: "", duration, synced, instrumental: false, plainLyrics: "x", syncedLyrics: synced ? "[00:01.00] a" : "" });
+const video = { title: "Lady Gaga - Bad Romance (Official Music Video)", channel: "LadyGagaVEVO", duration: 308 };
+const picked = pickLyricsForVideo([mk2(1, "Bad Romance", "Lady Gaga", 294), mk2(2, "Bad Romance", "Lady Gaga", 309), mk2(3, "Bad Romance (Live)", "Lady Gaga", 420), mk2(4, "Bad Romance", "Lady Gaga", 308, false)], video);
+ok(picked?.id === 2, `prefers duration match among synced hits (picked ${picked?.id})`);
+ok(pickLyricsForVideo([mk2(9, "Poker Face", "Lady Gaga", 237)], video) === null, "unrelated title → no match");
+ok(trackMatchesVideo("Bad Romance", "Lady Gaga", video) && !trackMatchesVideo("Embers & Light", "LyricGlow Demo", video), "trackMatchesVideo");
 
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

@@ -34,6 +34,29 @@ interface VideosResp {
   items?: { id?: string; contentDetails?: { duration?: string } }[];
 }
 
+interface VideoMetaResp {
+  items?: { id?: string; snippet?: { title?: string; channelTitle?: string }; contentDetails?: { duration?: string } }[];
+}
+
+/** title / channel / duration for one video id (1 quota unit); null on any failure */
+export async function fetchVideoMeta(videoId: string, key: string, signal?: AbortSignal): Promise<{ title: string; channel: string; duration: number } | null> {
+  try {
+    const p = new URLSearchParams({ part: "snippet,contentDetails", id: videoId, key });
+    const res = await fetch(`${API}/videos?${p}`, { signal });
+    if (!res.ok) return null;
+    const data = (await res.json()) as VideoMetaResp;
+    const it = data.items?.[0];
+    if (!it) return null;
+    return {
+      title: decodeEntities(it.snippet?.title ?? ""),
+      channel: decodeEntities(it.snippet?.channelTitle ?? ""),
+      duration: parseIsoDuration(it.contentDetails?.duration ?? ""),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function searchYouTube(query: string, key: string, signal?: AbortSignal, max = 8): Promise<YouTubeHit[]> {
   const q = query.trim();
   if (!q) return [];
