@@ -14,6 +14,7 @@ import { parseYouTubeId, youtubeTransport, type YTPlayer } from "../src/engine/y
 import { trackFromHit, type LyricsSearchHit } from "../src/model/lrclib";
 import { cleanVideoTitle, pickLyricsForVideo, trackMatchesVideo } from "../src/model/songMatch";
 import { TAP_REACTION_S, formatOffset, lineLabel, offsetForTap, upcomingLine } from "../src/model/sync";
+import { classifyUpload, isOfficialKind, officialQuery, rankHits, type YouTubeHit } from "../src/model/youtubeSearch";
 import { PlaybackEngine } from "../src/engine/PlaybackEngine";
 import type { Transport } from "../src/engine/Transport";
 
@@ -239,6 +240,32 @@ const picked = pickLyricsForVideo([mk2(1, "Bad Romance", "Lady Gaga", 294), mk2(
 ok(picked?.id === 2, `prefers duration match among synced hits (picked ${picked?.id})`);
 ok(pickLyricsForVideo([mk2(9, "Poker Face", "Lady Gaga", 237)], video) === null, "unrelated title → no match");
 ok(trackMatchesVideo("Bad Romance", "Lady Gaga", video) && !trackMatchesVideo("Embers & Light", "LyricGlow Demo", video), "trackMatchesVideo");
+
+console.log("\nofficial uploads (YouTube Music / official video filter)");
+ok(classifyUpload("Bad Romance", "Lady Gaga - Topic") === "topic", "'- Topic' channel → YouTube Music art track");
+ok(classifyUpload("Lady Gaga - Bad Romance (Official Music Video)", "LadyGagaVEVO") === "official", "VEVO → official");
+ok(classifyUpload("Bad Romance (Official Lyric Video)", "Lady Gaga") === "official", "official lyric video stays official");
+ok(classifyUpload("Bad Romance (Karaoke Version)", "KaraokeChannel") === "unofficial", "karaoke → unofficial");
+ok(classifyUpload("Bad Romance - Lady Gaga (cover)", "Some Singer") === "unofficial", "cover → unofficial");
+ok(classifyUpload("Bad Romance (Live at the Monster Ball)", "Fan Uploads") === "unofficial", "live → unofficial");
+ok(classifyUpload("Bad Romance", "Lady Gaga", "Lady Gaga") === "artist", "artist's own channel → artist");
+ok(classifyUpload("Bad Romance", "Random Channel", "Lady Gaga") === "other", "unknown uploader → other");
+const mkYt = (id: string, title: string, channel: string, duration: number, artist = "Lady Gaga"): YouTubeHit => {
+  const kind = classifyUpload(title, channel, artist);
+  return { videoId: id, title, channel, thumbnail: "", duration, kind, official: isOfficialKind(kind) };
+};
+const ranked = rankHits(
+  [
+    mkYt("k", "Bad Romance (Karaoke Version)", "KaraokeChannel", 295),
+    mkYt("o", "Lady Gaga - Bad Romance (Official Music Video)", "LadyGagaVEVO", 308),
+    mkYt("t2", "Bad Romance", "Lady Gaga - Topic", 334),
+    mkYt("t1", "Bad Romance", "Lady Gaga - Topic", 295),
+    mkYt("a", "Bad Romance", "Lady Gaga", 300),
+  ],
+  { title: "Bad Romance", artist: "Lady Gaga", lyricsDuration: 294 },
+);
+ok(ranked.map((h) => h.videoId).join(",") === "t1,t2,o,a,k", `rank: topic (closest length first) → official → artist → unofficial last (${ranked.map((h) => h.videoId).join(",")})`);
+ok(officialQuery("Bad Romance", "Lady Gaga") === "Bad Romance Lady Gaga" && officialQuery("Bad Romance", "Unknown artist") === "Bad Romance", "officialQuery drops the karaoke suffix and unknown artists");
 
 console.log("\ntap-to-sync");
 const demoN = normalizeTrack(demoTrack);

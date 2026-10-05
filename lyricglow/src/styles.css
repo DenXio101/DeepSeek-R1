@@ -78,6 +78,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 [data-theme="light"] .stage-grain { opacity: 0.25; }
 
+/* abstract mosaic (canvas) — only when no video is the backdrop; stays under the vignette */
+.stage-mosaic { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+[data-media="video"] .stage-mosaic, [data-media="youtube"] .stage-mosaic { display: none; }
+
 .stage-vignette {
   position: absolute; inset: -4%;
   background: radial-gradient(ellipse 90% 85% at 50% 50%, transparent 35%, rgba(0, 0, 0, 0.65) 100%);
@@ -158,6 +162,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .yt-hit-main { display: flex; flex-direction: column; min-width: 0; }
 .yt-hit-title { font-size: 0.84rem; font-weight: 600; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .yt-hit-meta { font-size: 0.72rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.yt-kind-badge {
+  display: inline-block; margin-right: 6px; padding: 1px 6px; border-radius: 10px;
+  font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--cyan); border: 1px solid rgba(0, 212, 255, 0.4);
+}
+.yt-kind-badge--topic { color: var(--gold); border-color: rgba(232, 200, 122, 0.45); }
+.yt-kind-badge--artist { color: var(--rose); border-color: rgba(244, 160, 192, 0.45); }
+.yt-kind-badge--unofficial { color: var(--text-muted); border-color: var(--border); }
+.yt-hit--unofficial { opacity: 0.7; }
+.yt-show-all { background: none; border: 0; color: var(--cyan); cursor: pointer; font-size: 0.78rem; padding: 0; text-decoration: underline; text-underline-offset: 2px; }
 .song-loaded { font-size: 0.8rem; color: var(--text-muted); }
 .song-loaded strong { color: var(--text-primary); }
 .song-loaded--demo { color: var(--rose); }

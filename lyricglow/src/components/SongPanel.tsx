@@ -2,9 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import type { Track } from "../lyrics";
 import { formatDuration, searchLyrics, type LyricsSearchHit } from "../model/lrclib";
 import { parseYouTubeId, youtubeSearchUrl } from "../engine/youtube";
-import { searchYouTube, youtubeApiKey, type YouTubeHit } from "../model/youtubeSearch";
+import { classifyUpload, kindLabel, officialQuery, rankHits, searchYouTube, youtubeApiKey, type YouTubeHit } from "../model/youtubeSearch";
 import { fitsDuration, sortHitsForBacking, type VideoMeta } from "../model/songMatch";
 import { IconUpload } from "./Icons";
+
+/** an alternative official upload the app may hop to when the chosen one can't be embedded */
+export interface YouTubeCandidate {
+  videoId: string;
+  meta: VideoMeta;
+}
 
 export type BackingSource =
   | { kind: "none" }
@@ -19,11 +25,13 @@ interface Props {
   onPickSynced: (hit: LyricsSearchHit) => void;
   onPickPlain: (hit: LyricsSearchHit) => void;
   onFile: (file: File) => void;
-  onYouTube: (videoId: string, meta?: VideoMeta) => void;
+  onYouTube: (videoId: string, meta?: VideoMeta, alternates?: YouTubeCandidate[]) => void;
   onClearSource: () => void;
   onNudge: (deltaSeconds: number) => void;
   /** length of the loaded backing track in seconds (0 = unknown) */
   backingDuration: number;
+  /** title/channel/length of the loaded YouTube video, when known */
+  backingMeta?: VideoMeta | null;
   /** focus the lyrics box when opened (e.g. from the mismatch banner) */
   focusLyrics?: boolean;
 }
@@ -32,7 +40,7 @@ interface Props {
  * "Find a song": search synced lyrics (LRCLIB), choose a backing track
  * (local file or YouTube link) and fine-tune lyric timing.
  */
-export default function SongPanel({ open, onClose, track, source, onPickSynced, onPickPlain, onFile, onYouTube, onClearSource, onNudge, backingDuration, focusLyrics }: Props) {
+export default function SongPanel({ open, onClose, track, source, onPickSynced, onPickPlain, onFile, onYouTube, onClearSource, onNudge, backingDuration, backingMeta, focusLyrics }: Props) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<LyricsSearchHit[]>([]);
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
@@ -44,6 +52,7 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
   const [ytHits, setYtHits] = useState<YouTubeHit[]>([]);
   const [ytStatus, setYtStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [ytSearchError, setYtSearchError] = useState<string | null>(null);
+  const [ytShowAll, setYtShowAll] = useState(false);
   const ytAbort = useRef<AbortController | null>(null);
   const lastAutoRef = useRef("");
 
@@ -54,10 +63,12 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
     ytAbort.current = ctl;
     setYtStatus("loading");
     setYtSearchError(null);
-    searchYouTube(q, ytKey, ctl.signal)
+    setYtShowAll(false);
+    const artist = track.artist !== "Unknown artist" ? track.artist : "";
+    searchYouTube(q, ytKey, ctl.signal, 12, artist)
       .then((h) => {
         if (ctl.signal.aborted) return;
-        setYtHits(h);
+        setYtHits(rankHits(h, { title: track.title, artist, lyricsDuration: track.duration ?? 0 }));
         setYtStatus("done");
       })
       .catch((err: unknown) => {
@@ -102,7 +113,7 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
   }, [open, focusLyrics]);
 
   // auto-suggest videos for the current song whenever it changes while the panel is open
-  const autoQuery = `${track.title} ${track.artist !== "Unknown artist" ? track.artist : ""} karaoke`.trim();
+  const autoQuery = officialQuery(track.title, track.artist);
   useEffect(() => {
     if (!open || !ytKey || track.source === "demo") return;
     if (lastAutoRef.current === autoQuery) return;
@@ -116,6 +127,15 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
 
   const ytQueryManual = autoQuery;
   const offset = track.offset ?? 0;
+  const officialHits = ytHits.filter((h) => h.kind !== "unofficial");
+  const hiddenCount = ytHits.length - officialHits.length;
+  const shownHits = ytShowAll ? ytHits : officialHits;
+  const pickVideo = (h: YouTubeHit) => {
+    const meta = (x: YouTubeHit): VideoMeta => ({ title: x.title, channel: x.channel, duration: x.duration });
+    const alternates: YouTubeCandidate[] = officialHits.filter((x) => x.videoId !== h.videoId).map((x) => ({ videoId: x.videoId, meta: meta(x) }));
+    onYouTube(h.videoId, meta(h), alternates);
+  };
+  const sourceKind = source.kind === "youtube" && backingMeta ? classifyUpload(backingMeta.title, backingMeta.channel, track.artist) : null;
 
   const submitYouTube = () => {
     const id = parseYouTubeId(ytInput);
@@ -198,7 +218,7 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
 
         {/* ── 2. backing track ── */}
         <div className="sheet-section">
-          <div className="sheet-label">2 · Backing track</div>
+          <div className="sheet-label">2 · Backing track (YouTube Music / official video)</div>
           <div className={`song-loaded ${track.source === "demo" ? "song-loaded--demo" : ""}`} data-testid="lyrics-loaded">
             Lyrics loaded: <strong>{track.title}</strong>
             {track.artist && track.artist !== "Unknown artist" ? ` — ${track.artist}` : ""}
@@ -213,7 +233,12 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
             )}
             {source.kind === "youtube" && (
               <span>
-                YouTube: <strong>{source.videoId}</strong>
+                YouTube: <strong>{backingMeta?.title || source.videoId}</strong>
+                {sourceKind && kindLabel(sourceKind) && (
+                  <span className={`yt-kind-badge yt-kind-badge--${sourceKind}`} data-testid="song-source-kind" style={{ marginLeft: 8 }}>
+                    {kindLabel(sourceKind)}
+                  </span>
+                )}
               </span>
             )}
             {source.kind !== "none" && (
@@ -223,7 +248,7 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
             )}
           </div>
           <div className="studio-row">
-            <label className="upload-btn">
+            <label className="dock-btn">
               <input
                 type="file"
                 accept="audio/*,video/*,.mp3,.mp4,.m4a,.wav,.ogg,.webm"
@@ -258,7 +283,7 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
                   type="search"
                   value={ytQuery}
                   onChange={(e) => setYtQuery(e.target.value)}
-                  placeholder="Search YouTube for a backing track…"
+                  placeholder="Search YouTube Music / official videos…"
                   aria-label="Search YouTube"
                   data-testid="youtube-search-input"
                   enterKeyHint="search"
@@ -275,12 +300,20 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
                   </div>
                 )}
                 {ytStatus === "done" && ytHits.length === 0 && <div className="song-hint">No videos found — try other words or paste a link below.</div>}
-                {ytHits.map((h, i) => (
-                  <button key={h.videoId} type="button" className="yt-hit" onClick={() => onYouTube(h.videoId, { title: h.title, channel: h.channel, duration: h.duration })} data-testid={`youtube-result-${i}`}>
+                {ytStatus === "done" && ytHits.length > 0 && officialHits.length === 0 && !ytShowAll && (
+                  <div className="song-hint" data-testid="youtube-no-official">No official upload found for this search.</div>
+                )}
+                {shownHits.map((h, i) => (
+                  <button key={h.videoId} type="button" className={`yt-hit ${h.kind === "unofficial" ? "yt-hit--unofficial" : ""}`} onClick={() => pickVideo(h)} data-testid={`youtube-result-${i}`} data-kind={h.kind}>
                     {h.thumbnail ? <img className="yt-thumb" src={h.thumbnail} alt="" loading="lazy" /> : <span className="yt-thumb" />}
                     <span className="yt-hit-main">
                       <span className="yt-hit-title">{h.title}</span>
                       <span className="yt-hit-meta">
+                        {kindLabel(h.kind) && (
+                          <span className={`yt-kind-badge yt-kind-badge--${h.kind}`} data-testid={`youtube-kind-${i}`}>
+                            {kindLabel(h.kind)}
+                          </span>
+                        )}
                         {h.channel}
                         {h.duration ? ` · ${formatDuration(h.duration)}` : ""}
                       </span>
@@ -288,6 +321,11 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
                   </button>
                 ))}
               </div>
+              {ytStatus === "done" && hiddenCount > 0 && (
+                <button type="button" className="yt-show-all" onClick={() => setYtShowAll((v) => !v)} data-testid="youtube-show-all">
+                  {ytShowAll ? "Hide other uploads" : `Show ${hiddenCount} other upload${hiddenCount === 1 ? "" : "s"} (karaoke, covers, live…)`}
+                </button>
+              )}
             </>
           )}
           <form
@@ -317,7 +355,7 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
             </div>
           )}
           <div className="song-hint">
-            YouTube plays as the stage video; the stage lights follow the song's BPM there (browsers don't expose YouTube audio). Search "karaoke" for no vocals, or the original to sing with the artist.
+            Only <strong>YouTube Music</strong> tracks and <strong>official</strong> videos are listed, so the words line up with the record. The video plays as the stage; the lights follow the song's BPM there (browsers don't expose YouTube audio).
           </div>
         </div>
 

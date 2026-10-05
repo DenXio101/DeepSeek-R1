@@ -5,7 +5,8 @@ import { loadYouTubeApi, youtubeErrorMessage, youtubeTransport, YT_STATE, type Y
 interface Props {
   engine: PlaybackEngine;
   videoId: string;
-  onError: (message: string) => void;
+  /** `code` is the IFrame API error code (2, 5, 100, 101, 150) when the player reported it */
+  onError: (message: string, code?: number) => void;
   onReady?: () => void;
 }
 
@@ -63,7 +64,7 @@ export default function YouTubeStage({ engine, videoId, onError, onReady }: Prop
               if (s === YT_STATE.PLAYING) transport.notify("duration");
             },
             onPlaybackRateChange: () => transport?.notify("rate"),
-            onError: (e) => cbRef.current.onError(youtubeErrorMessage(e.data)),
+            onError: (e) => cbRef.current.onError(youtubeErrorMessage(e.data), e.data),
           },
         });
       })

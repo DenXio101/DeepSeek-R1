@@ -1,4 +1,13 @@
 // ─── YouTube Data API v3 search (needs a domain-restricted API key) ────────
+import { overlap } from "./songMatch";
+
+/**
+ * What kind of upload a hit is. Only `topic` (YouTube Music art track = the album
+ * master), `official` (VEVO / "Official Video") and `artist` (the artist's own channel)
+ * count as official; their timing matches the record LRCLIB lyrics were made for.
+ */
+export type HitKind = "topic" | "official" | "artist" | "other" | "unofficial";
+
 export interface YouTubeHit {
   videoId: string;
   title: string;
@@ -6,9 +15,72 @@ export interface YouTubeHit {
   thumbnail: string;
   /** seconds, 0 when unknown */
   duration: number;
+  kind: HitKind;
+  /** topic / official / artist */
+  official: boolean;
 }
 
 const API = "https://www.googleapis.com/youtube/v3";
+/** YouTube Data API category id for Music */
+const MUSIC_CATEGORY = "10";
+
+const UNOFFICIAL_RE =
+  /\b(karaoke|cover(?:ed|s)?|live(?:\s+at|\s+from|\s+in|\s+performance|\s+version)?|remix|sped\s*up|slowed|nightcore|reverb|lyrics?|lyric\s*video|instrumental|tribute|reaction|8d|1\s*hour|loop(?:ed)?|mashup|acoustic\s+version|piano\s+version|choir|parody|backing\s+track|minus\s+one|edit)\b/i;
+const OFFICIAL_TITLE_RE = /\bofficial\s+(?:music\s+)?(?:video|audio|visuali[sz]er|lyric\s+video)\b|\(official\)|\bvideo\s+oficial\b|\baudio\s+oficial\b/i;
+
+export function classifyUpload(title: string, channel: string, artist = ""): HitKind {
+  const ch = channel.trim();
+  if (/\s-\sTopic$/i.test(ch)) return "topic";
+  const t = title.trim();
+  // an official lyric video is still the record; only call it unofficial when nothing marks it official
+  const officialMark = /vevo$/i.test(ch) || OFFICIAL_TITLE_RE.test(t);
+  if (!officialMark && (UNOFFICIAL_RE.test(t) || UNOFFICIAL_RE.test(ch))) return "unofficial";
+  if (officialMark) return "official";
+  if (artist) {
+    const chClean = ch.replace(/\s*(official|music|records|tv)\s*$/i, "");
+    if (overlap(artist, chClean) >= 0.6 || overlap(chClean, artist) >= 0.6) return "artist";
+  }
+  return "other";
+}
+
+export function isOfficialKind(kind: HitKind): boolean {
+  return kind === "topic" || kind === "official" || kind === "artist";
+}
+
+export function kindLabel(kind: HitKind): string {
+  switch (kind) {
+    case "topic":
+      return "YouTube Music";
+    case "official":
+      return "Official";
+    case "artist":
+      return "Artist channel";
+    case "unofficial":
+      return "Not official";
+    default:
+      return "";
+  }
+}
+
+const KIND_ORDER: Record<HitKind, number> = { topic: 0, official: 1, artist: 2, other: 3, unofficial: 4 };
+
+/** Official uploads first (YouTube Music → VEVO/official → artist), then closest length to the lyrics, then title match. */
+export function rankHits(hits: YouTubeHit[], song: { title: string; artist?: string; lyricsDuration?: number }): YouTubeHit[] {
+  const dur = song.lyricsDuration ?? 0;
+  const durPenalty = (h: YouTubeHit) => (dur && h.duration ? Math.min(60, Math.abs(h.duration - dur)) : 30);
+  return [...hits].sort(
+    (a, b) =>
+      KIND_ORDER[a.kind] - KIND_ORDER[b.kind] ||
+      durPenalty(a) - durPenalty(b) ||
+      overlap(song.title, b.title) - overlap(song.title, a.title),
+  );
+}
+
+/** search text for the official recording: title + artist, no "karaoke" suffix */
+export function officialQuery(title: string, artist = ""): string {
+  const a = artist && artist !== "Unknown artist" ? artist : "";
+  return `${title} ${a}`.trim();
+}
 
 export function youtubeApiKey(): string | null {
   const k = (import.meta.env.VITE_YT_API_KEY as string | undefined)?.trim();
@@ -57,12 +129,13 @@ export async function fetchVideoMeta(videoId: string, key: string, signal?: Abor
   }
 }
 
-export async function searchYouTube(query: string, key: string, signal?: AbortSignal, max = 8): Promise<YouTubeHit[]> {
+export async function searchYouTube(query: string, key: string, signal?: AbortSignal, max = 12, artist = ""): Promise<YouTubeHit[]> {
   const q = query.trim();
   if (!q) return [];
   const params = new URLSearchParams({
     part: "snippet",
     type: "video",
+    videoCategoryId: MUSIC_CATEGORY,
     videoEmbeddable: "true",
     videoSyndicated: "true",
     maxResults: String(max),
@@ -87,12 +160,17 @@ export async function searchYouTube(query: string, key: string, signal?: AbortSi
   for (const it of data.items ?? []) {
     const id = it.id?.videoId;
     if (!id) continue;
+    const title = decodeEntities(it.snippet?.title ?? "");
+    const channel = decodeEntities(it.snippet?.channelTitle ?? "");
+    const kind = classifyUpload(title, channel, artist);
     hits.push({
       videoId: id,
-      title: decodeEntities(it.snippet?.title ?? ""),
-      channel: decodeEntities(it.snippet?.channelTitle ?? ""),
+      title,
+      channel,
       thumbnail: it.snippet?.thumbnails?.medium?.url ?? it.snippet?.thumbnails?.default?.url ?? "",
       duration: 0,
+      kind,
+      official: isOfficialKind(kind),
     });
   }
   if (!hits.length) return hits;

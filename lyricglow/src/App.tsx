@@ -14,7 +14,8 @@ import { SyncCard } from "./components/SyncControl";
 import { formatOffset } from "./model/sync";
 import MediaElement, { type MediaKind } from "./components/MediaElement";
 import YouTubeStage from "./components/YouTubeStage";
-import SongPanel, { type BackingSource } from "./components/SongPanel";
+import SongPanel, { type BackingSource, type YouTubeCandidate } from "./components/SongPanel";
+import MosaicBackdrop from "./components/MosaicBackdrop";
 import { searchLyrics, studioTextFromHit, trackFromHit, type LyricsSearchHit } from "./model/lrclib";
 import { cleanVideoTitle, pickLyricsForVideo, trackMatchesVideo, type VideoMeta } from "./model/songMatch";
 import { fetchVideoMeta, youtubeApiKey } from "./model/youtubeSearch";
@@ -43,6 +44,8 @@ import "./styles.css";
 
 /** lyrics and backing track lengths this far apart usually mean a different version → offer Tap to sync */
 const VERSION_MISMATCH_S = 3;
+/** how many embed-blocked official uploads to skip past automatically */
+const MAX_HOPS = 3;
 
 
 export default function App() {
@@ -72,6 +75,7 @@ export default function App() {
   const [hintDismissedFor, setHintDismissedFor] = useState("");
   const [songFocusLyrics, setSongFocusLyrics] = useState(0);
   const [backingMeta, setBackingMeta] = useState<VideoMeta | null>(null);
+  const ytQueueRef = useRef<{ videoId: string; rest: YouTubeCandidate[]; hops: number } | null>(null);
   const autoMatchRef = useRef(0);
   // latest track for async callbacks
   const trackRef = useRef<Track | null>(null);
@@ -208,10 +212,12 @@ export default function App() {
   }, [graph]);
 
   const handleYouTube = useCallback(
-    (videoId: string, meta?: VideoMeta) => {
+    (videoId: string, meta?: VideoMeta, alternates?: YouTubeCandidate[]) => {
       setSource({ kind: "youtube", videoId });
       setSongOpen(false);
       setBackingMeta(meta ?? null);
+      // remember the other official uploads so an embed-blocked pick can hop to the next one
+      ytQueueRef.current = alternates ? { videoId, rest: alternates, hops: ytQueueRef.current?.videoId === videoId ? ytQueueRef.current.hops : 0 } : null;
       setNotice({ kind: "info", text: "Loading YouTube video… press ▶ when it appears." });
 
       // auto-match lyrics unless the loaded track already is this song
@@ -245,9 +251,26 @@ export default function App() {
     [engine],
   );
 
+  /** embed-blocked (101/150) or missing (100) official upload → try the next candidate, at most MAX_HOPS times */
+  const handleYouTubeError = useCallback(
+    (message: string, code?: number) => {
+      const q = ytQueueRef.current;
+      if ((code === 101 || code === 150 || code === 100) && q && q.rest.length && q.hops < MAX_HOPS) {
+        const [next, ...rest] = q.rest;
+        ytQueueRef.current = { videoId: next.videoId, rest, hops: q.hops + 1 };
+        handleYouTube(next.videoId, next.meta, rest);
+        setNotice({ kind: "info", text: `That upload can't be embedded — trying the next official video (${next.meta.title})…` });
+        return;
+      }
+      setNotice({ kind: "error", text: message });
+    },
+    [handleYouTube],
+  );
+
   const clearSource = useCallback(() => {
     setSource({ kind: "none" });
     setBackingMeta(null);
+    ytQueueRef.current = null;
     autoMatchRef.current++;
   }, []);
 
@@ -378,6 +401,9 @@ export default function App() {
     >
       <div className="stage-bg" aria-hidden="true">
         <div className="stage-grain" />
+        {source.kind === "none" || (source.kind === "file" && source.mediaKind === "audio") ? (
+          <MosaicBackdrop engine={engine} theme={theme} reducedMotion={reducedMotion} />
+        ) : null}
         <div className="stage-vignette" />
         <div className="stage-spotlight stage-spotlight--left" />
         <div className="stage-spotlight stage-spotlight--right" />
@@ -390,7 +416,7 @@ export default function App() {
           key={source.videoId}
           engine={engine}
           videoId={source.videoId}
-          onError={(m) => setNotice({ kind: "error", text: m })}
+          onError={handleYouTubeError}
           onReady={() => setNotice((prev) => (prev && !prev.text.startsWith("Loading YouTube") ? prev : { kind: "info", text: "YouTube ready — press ▶ to sing." }))}
         />
       )}
@@ -496,6 +522,7 @@ export default function App() {
         onClearSource={clearSource}
         onNudge={nudgeLyrics}
         backingDuration={backingDuration}
+        backingMeta={backingMeta}
         focusLyrics={songFocusLyrics > 0}
       />
 

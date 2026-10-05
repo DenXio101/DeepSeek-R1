@@ -56,7 +56,7 @@ export function cleanVideoTitle(rawTitle: string, channel = ""): { title: string
   return { title, artist, query };
 }
 
-function tokens(s: string): string[] {
+export function tokens(s: string): string[] {
   return s
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
@@ -64,7 +64,8 @@ function tokens(s: string): string[] {
     .filter((w) => w.length > 1);
 }
 
-function overlap(a: string, b: string): number {
+/** share of a's tokens that also appear in b (0..1) */
+export function overlap(a: string, b: string): number {
   const ta = tokens(a);
   const tb = new Set(tokens(b));
   if (!ta.length) return 0;
