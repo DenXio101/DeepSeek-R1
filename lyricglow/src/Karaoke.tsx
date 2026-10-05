@@ -262,7 +262,12 @@ export default function Karaoke({
       if (peaking && !scratch.peakFired.has(wk)) {
         scratch.peakFired.add(wk);
         const c = scratch.wordCenters.get(wk);
-        if (c && onPeakRef.current) onPeakRef.current(c, activeLine.voice);
+        const host = containerRef.current;
+        if (c && host && onPeakRef.current) {
+          // hand over viewport coordinates: the particle canvas covers the whole stage, not just this block
+          const cr = host.getBoundingClientRect();
+          onPeakRef.current({ x: c.x + cr.left, y: c.y + cr.top }, activeLine.voice);
+        }
       } else if (!peaking && t < last.start && scratch.peakFired.has(wk)) {
         scratch.peakFired.delete(wk);
       }
@@ -374,11 +379,6 @@ export default function Karaoke({
       data-testid="karaoke-stage"
       data-active-line={activeLine?.id ?? ""}
     >
-      {activeLine && (
-        <div className="section-label" data-testid="section-label">
-          {activeLine.section}
-        </div>
-      )}
       <div className="lyric-lines-container" aria-live="off">
         {slots.map(({ line, role }) => renderLine(line, role))}
       </div>

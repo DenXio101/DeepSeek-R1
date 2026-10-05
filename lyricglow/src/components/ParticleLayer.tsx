@@ -151,12 +151,15 @@ export default function ParticleLayer({ enabled, theme, fxRef }: Props) {
         if (!st.enabled) return;
         const rgb = VOICE_RGB[voice];
         const n = 26 + Math.floor(Math.random() * 14);
+        const cr = c.getBoundingClientRect(); // p is in viewport coordinates
+        const px = p.x - cr.left;
+        const py = p.y - cr.top;
         for (let i = 0; i < n && st.ps.length < MAX; i++) {
           const ang = -Math.PI / 2 + (Math.random() - 0.5) * 1.6;
           const sp = 40 + Math.random() * 130;
           st.ps.push({
-            x: p.x + (Math.random() - 0.5) * 90,
-            y: p.y + (Math.random() - 0.5) * 22,
+            x: px + (Math.random() - 0.5) * 90,
+            y: py + (Math.random() - 0.5) * 22,
             vx: Math.cos(ang) * sp,
             vy: Math.sin(ang) * sp,
             g: -28,

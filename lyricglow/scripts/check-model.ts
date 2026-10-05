@@ -13,6 +13,9 @@ import type { PitchSample } from "../src/engine/PitchTracker";
 import { parseYouTubeId, youtubeTransport, type YTPlayer } from "../src/engine/youtube";
 import { trackFromHit, type LyricsSearchHit } from "../src/model/lrclib";
 import { cleanVideoTitle, pickLyricsForVideo, trackMatchesVideo } from "../src/model/songMatch";
+import { TAP_REACTION_S, formatOffset, lineLabel, offsetForTap, upcomingLine } from "../src/model/sync";
+import { PlaybackEngine } from "../src/engine/PlaybackEngine";
+import type { Transport } from "../src/engine/Transport";
 
 let failures = 0;
 const ok = (cond: boolean, msg: string) => {
@@ -236,6 +239,82 @@ const picked = pickLyricsForVideo([mk2(1, "Bad Romance", "Lady Gaga", 294), mk2(
 ok(picked?.id === 2, `prefers duration match among synced hits (picked ${picked?.id})`);
 ok(pickLyricsForVideo([mk2(9, "Poker Face", "Lady Gaga", 237)], video) === null, "unrelated title → no match");
 ok(trackMatchesVideo("Bad Romance", "Lady Gaga", video) && !trackMatchesVideo("Embers & Light", "LyricGlow Demo", video), "trackMatchesVideo");
+
+console.log("\ntap-to-sync");
+const demoN = normalizeTrack(demoTrack);
+const up0 = upcomingLine(demoN, 0);
+ok(up0?.id === "intro-1", `at 0 s the upcoming line is intro-1 (${up0?.id})`);
+ok(upcomingLine(demoN, 2.05)?.id === "intro-1", "just after a line starts it is still the target (first 25 %)");
+ok(upcomingLine(demoN, 4.0)?.id === "intro-2", "mid-line → next line is the target");
+ok(upcomingLine({ ...demoN, offset: -2 }, 5.2)?.id === "intro-2", "offset is honoured when picking the target");
+ok(upcomingLine(demoN, 60) === null, "past the end → nothing");
+const off = offsetForTap(demoN.lines[1], 8.0); // intro-2 starts at 6.0 in the lyrics, singer heard at 8.0
+ok(Math.abs(off - (6.0 - (8.0 - TAP_REACTION_S))) < 1e-9, `offset for a tap at 8.0 on a 6.0 line = ${off}`);
+ok(Math.abs(8.0 - TAP_REACTION_S + off - 6.0) < 1e-9, "media time + offset lands on the line start");
+ok(lineLabel(demoN.lines[0]) === "Softly now the light fades", `line label: ${lineLabel(demoN.lines[0])}`);
+ok(lineLabel(demoN.lines[1], 3) === "Lanterns drift above…", `truncated label: ${lineLabel(demoN.lines[1], 3)}`);
+ok(formatOffset(1.3) === "+1.30 s" && formatOffset(-0.5) === "−0.50 s", "formatOffset");
+
+console.log("\nmedia clock slew (PlaybackEngine with a coarse transport)");
+{
+  const g = globalThis as unknown as { requestAnimationFrame?: unknown; cancelAnimationFrame?: unknown };
+  let tickCb: ((now: number) => void) | null = null;
+  const prevRaf = g.requestAnimationFrame;
+  const prevCaf = g.cancelAnimationFrame;
+  g.requestAnimationFrame = (cb: (now: number) => void) => {
+    tickCb = cb;
+    return 1;
+  };
+  g.cancelAnimationFrame = () => {};
+  let mediaTime = 10;
+  let subs: ((ev: string) => void)[] = [];
+  const coarse: Transport = {
+    kind: "youtube",
+    extrapolation: 0.6,
+    time: () => mediaTime,
+    duration: () => 100,
+    playing: () => true,
+    ended: () => false,
+    rate: () => 1,
+    play: () => {},
+    pause: () => {},
+    seek: () => {},
+    setRate: () => {},
+    subscribe: (cb) => {
+      subs.push(cb as (ev: string) => void);
+      return () => {
+        subs = subs.filter((s) => s !== cb);
+      };
+    },
+  };
+  const eng = new PlaybackEngine();
+  eng.attachTransport(coarse);
+  const times: number[] = [];
+  eng.subscribeFrame((f) => times.push(f.time), "render");
+  let now = 1000;
+  const step = () => {
+    now += 16.7;
+    tickCb?.(now);
+  };
+  step(); // first frame snaps to 10
+  // the iframe reports every 250 ms, and the report jitters ±60 ms around the truth
+  let maxJump = 0;
+  let backward = 0;
+  for (let i = 1; i <= 120; i++) {
+    if (i % 15 === 0) mediaTime = 10 + (i * 16.7) / 1000 + (i % 30 === 0 ? 0.06 : -0.06);
+    step();
+    const d = times[times.length - 1] - times[times.length - 2];
+    if (d < 0) backward++;
+    maxJump = Math.max(maxJump, d);
+  }
+  const covered = times[times.length - 1] - times[0];
+  ok(backward === 0, `no backward steps (${backward})`);
+  ok(maxJump < 0.03, `largest per-frame jump ${maxJump.toFixed(3)} s (< 0.03 at 60 fps)`);
+  ok(Math.abs(covered - 2.0) < 0.3, `2.0 s of wall time covered ≈ ${covered.toFixed(2)} s of song`);
+  eng.dispose();
+  g.requestAnimationFrame = prevRaf;
+  g.cancelAnimationFrame = prevCaf;
+}
 
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

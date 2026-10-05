@@ -1,5 +1,6 @@
 import Logo from "../Logo";
 import type { Section } from "../lyrics";
+import { IconExitFullscreen, IconFullscreen } from "./Icons";
 
 export type Theme = "dark" | "light";
 
@@ -7,12 +8,12 @@ interface Props {
   title: string;
   artist: string;
   section: Section | null;
-  theme: Theme;
-  onToggleTheme: () => void;
-  children?: React.ReactNode;
+  fullscreen: boolean;
+  onToggleFullscreen: () => void;
 }
 
-export default function Header({ title, artist, section, theme, onToggleTheme, children }: Props) {
+/** Compact top bar: brand · song · section badge · performance-mode toggle. */
+export default function Header({ title, artist, section, fullscreen, onToggleFullscreen }: Props) {
   return (
     <header className="app-header" data-testid="app-header">
       <div className="app-brand">
@@ -20,11 +21,6 @@ export default function Header({ title, artist, section, theme, onToggleTheme, c
         <span className="app-name">LyricGlow</span>
       </div>
       <div className="header-meta">
-        {section && (
-          <span className="header-section-badge" data-testid="header-section-badge">
-            {section}
-          </span>
-        )}
         <div className="track-info">
           <span className="track-title" data-testid="track-title">
             {title}
@@ -33,17 +29,23 @@ export default function Header({ title, artist, section, theme, onToggleTheme, c
             {artist}
           </span>
         </div>
+        {section && (
+          <span className="header-section-badge" data-testid="header-section-badge">
+            {section}
+          </span>
+        )}
       </div>
       <div className="header-actions">
-        {children}
         <button
           type="button"
-          className="icon-btn theme-toggle"
-          onClick={onToggleTheme}
-          aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
-          data-testid="theme-toggle"
+          className="icon-btn"
+          onClick={onToggleFullscreen}
+          aria-pressed={fullscreen}
+          aria-label={fullscreen ? "Exit performance mode" : "Enter performance mode (fullscreen)"}
+          title="Performance mode (F)"
+          data-testid="btn-fullscreen"
         >
-          {theme === "dark" ? "☀" : "☾"}
+          {fullscreen ? <IconExitFullscreen /> : <IconFullscreen />}
         </button>
       </div>
     </header>

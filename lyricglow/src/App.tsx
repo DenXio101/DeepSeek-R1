@@ -8,40 +8,41 @@ import { usePlaybackEngine } from "./engine/usePlaybackEngine";
 import { useKaraokeSession } from "./engine/useKaraokeSession";
 import { useIsLandscape } from "./hooks/useOrientation";
 import Header, { type Theme } from "./components/Header";
-import ControlsDock from "./components/ControlsDock";
+import ThumbBar from "./components/ThumbBar";
+import MoreSheet from "./components/MoreSheet";
+import { SyncCard } from "./components/SyncControl";
+import { formatOffset } from "./model/sync";
 import MediaElement, { type MediaKind } from "./components/MediaElement";
 import YouTubeStage from "./components/YouTubeStage";
 import SongPanel, { type BackingSource } from "./components/SongPanel";
 import { searchLyrics, studioTextFromHit, trackFromHit, type LyricsSearchHit } from "./model/lrclib";
 import { cleanVideoTitle, pickLyricsForVideo, trackMatchesVideo, type VideoMeta } from "./model/songMatch";
 import { fetchVideoMeta, youtubeApiKey } from "./model/youtubeSearch";
-import { IconSearch } from "./components/Icons";
-import LibraryButtons from "./components/LibraryButtons";
 import SyncStudio from "./components/SyncStudio/SyncStudio";
 import { initStudio, studioReducer } from "./components/SyncStudio/studioReducer";
-import { IconSparkle, IconStudio } from "./components/Icons";
 import SpectrumCanvas from "./components/SpectrumCanvas";
 import { useAudioGraph } from "./engine/useAudioGraph";
 import { isIOS, useReducedMotion, type EffectsLevel } from "./hooks/useReducedMotion";
 import { PitchTracker } from "./engine/PitchTracker";
 import { DemoSynth } from "./engine/DemoSynth";
-import VocalControl from "./components/VocalControl";
 import type { Difficulty } from "./engine/scoring";
 import PitchLane from "./components/PitchLane";
 import ScoreHud from "./components/ScoreHud";
 import GradeScreen from "./components/GradeScreen";
-import MicControls from "./components/MicControls";
 import ParticleLayer, { type StageFx } from "./components/ParticleLayer";
 import CountIn from "./components/CountIn";
 import SectionCard from "./components/SectionCard";
 import { useFullscreen } from "./hooks/useFullscreen";
 import { useIdleHide } from "./hooks/useIdleHide";
 import { useHotkeys } from "./hooks/useHotkeys";
-import { IconExitFullscreen, IconFullscreen } from "./components/Icons";
+import { useVocalLevel } from "./hooks/useVocalLevel";
 import type { Point } from "./components/CueBall";
 import type { Voice } from "./lyrics";
 import { importLyricsText } from "./model/trackIO";
 import "./styles.css";
+
+/** lyrics and backing track lengths this far apart usually mean a different version → offer Tap to sync */
+const VERSION_MISMATCH_S = 3;
 
 
 export default function App() {
@@ -66,6 +67,9 @@ export default function App() {
   const shownTrack = mode === "studio" && previewTrack ? previewTrack : track;
   const [source, setSource] = useState<BackingSource>({ kind: "none" });
   const [songOpen, setSongOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [hintDismissedFor, setHintDismissedFor] = useState("");
   const [songFocusLyrics, setSongFocusLyrics] = useState(0);
   const [backingMeta, setBackingMeta] = useState<VideoMeta | null>(null);
   const autoMatchRef = useRef(0);
@@ -83,6 +87,7 @@ export default function App() {
   const { session: sessionObj, state: session } = useKaraokeSession(engine, timeline);
   const tracker = useMemo(() => new PitchTracker(graph), [graph]);
   const micOn = mic.status === "on";
+  const vocalMono = useVocalLevel(engine, graph, media && playback.sourceKind === "media" ? media.url : null, vocalLevel);
 
   // mic → pitch tracker → session scoring
   useEffect(() => {
@@ -120,7 +125,11 @@ export default function App() {
   }, [finaleKey, reducedMotion]);
 
   // performance mode: hide chrome after 3 s idle while playing fullscreen
-  const chromeHidden = useIdleHide(fullscreen.active && playback.playing && mode === "perform", 3000);
+  const chromeHidden = useIdleHide(fullscreen.active && playback.playing && mode === "perform" && !syncing, 3000);
+
+  const nudgeLyrics = useCallback((delta: number) => {
+    setTrack((t) => ({ ...t, offset: Math.round(((t.offset ?? 0) + delta) * 100) / 100 }));
+  }, []);
 
   useHotkeys(
     {
@@ -131,8 +140,11 @@ export default function App() {
       ArrowRight: () => engine.seek(engine.frame.time + 5),
       m: () => toggleMic(),
       r: () => engine.restart(),
+      "[": () => nudgeLyrics(-0.1),
+      "]": () => nudgeLyrics(0.1),
+      Escape: () => setSyncing(false),
     },
-    mode === "perform" && !songOpen,
+    mode === "perform" && !songOpen && !moreOpen,
   );
 
   const singAgain = useCallback(() => {
@@ -192,6 +204,7 @@ export default function App() {
     setBackingMeta(null);
     autoMatchRef.current++;
     setSongOpen(false);
+    setMoreOpen(false);
   }, [graph]);
 
   const handleYouTube = useCallback(
@@ -274,12 +287,26 @@ export default function App() {
     setNotice({ kind: "info", text: `"${hit.title}" has no timing yet — add a backing track, then tap it out in Sync Studio.` });
   }, []);
 
-  const nudgeLyrics = useCallback((delta: number) => {
-    setTrack((t) => ({ ...t, offset: Math.round(((t.offset ?? 0) + delta) * 100) / 100 }));
-  }, []);
+  const sourceKey = source.kind === "file" ? source.url : source.kind === "youtube" ? source.videoId : "";
+  const startTapSync = useCallback(() => {
+    setMoreOpen(false);
+    setHintDismissedFor(sourceKey);
+    setSyncing(true);
+    if (!engine.getSnapshot().playing) engine.play();
+  }, [engine, sourceKey]);
+
+  const applyTapSync = useCallback(
+    (offset: number) => {
+      setTrack((t) => ({ ...t, offset }));
+      setSyncing(false);
+      setNotice({ kind: "info", text: `Lyrics timing set to ${formatOffset(offset)}. Still off? More → Lyrics timing.` });
+    },
+    [],
+  );
 
   const handleImportFile = useCallback(
     (file: File) => {
+      setMoreOpen(false);
       file
         .text()
         .then((text) => {
@@ -318,6 +345,24 @@ export default function App() {
   const sectionIdx = session.activeIdx >= 0 ? session.activeIdx : Math.min(shownTrack.lines.length - 1, Math.max(0, session.cursorIdx - 1));
   const activeSection = session.activeIdx >= 0 || session.cursorIdx > 0 ? shownTrack.lines[sectionIdx]?.section ?? null : null;
 
+  const backingDuration = backingMeta?.duration || (source.kind === "file" ? playback.duration : 0);
+  const demoMismatch = mode === "perform" && source.kind !== "none" && track.source === "demo" && !songOpen;
+  const versionMismatch =
+    mode === "perform" &&
+    !demoMismatch &&
+    source.kind !== "none" &&
+    backingDuration > 0 &&
+    (track.duration ?? 0) > 0 &&
+    Math.abs((track.duration ?? 0) - backingDuration) > VERSION_MISMATCH_S;
+  const toggleVisualizer = () => {
+    const next = !visualizer;
+    setVisualizer(next);
+    if (next) {
+      graph.ensureContext();
+      graph.resume();
+    }
+  };
+
   return (
     <div
       className={`app-root theme-${theme}`}
@@ -328,6 +373,7 @@ export default function App() {
       data-motion={reducedMotion ? "reduced" : "full"}
       data-chrome={chromeHidden ? "hidden" : "visible"}
       data-fullscreen={String(fullscreen.active)}
+      data-syncing={String(syncing && mode === "perform")}
       data-testid="app-root"
     >
       <div className="stage-bg" aria-hidden="true">
@@ -352,6 +398,47 @@ export default function App() {
       <SpectrumCanvas engine={engine} graph={graph} timeline={timeline} visible={visualizer} reducedMotion={reducedMotion} theme={theme} />
 
       <div className="lyric-overlay">
+        <div className="stage-toasts" data-testid="stage-toasts">
+          {demoMismatch && (
+            <div className="lyrics-mismatch" role="status" data-testid="lyrics-mismatch">
+              <span>
+                Showing the <strong>demo lyrics</strong> — they won't match this song.
+              </span>
+              <button type="button" className="dock-btn dock-btn--accent" onClick={openSongLyrics} data-testid="lyrics-mismatch-fix">
+                Find this song's lyrics →
+              </button>
+            </div>
+          )}
+          {versionMismatch && !syncing && hintDismissedFor !== sourceKey && (
+            <button type="button" className="sync-hint" onClick={startTapSync} data-testid="sync-hint">
+              Different version of the song? <strong>Tap to sync →</strong>
+            </button>
+          )}
+          {mic.status === "error" && mic.message && mode === "perform" && (
+            <div className="notice notice--error" role="alert" data-testid="mic-status">
+              {mic.message}
+            </div>
+          )}
+          {notice && (
+            <div
+              className={`notice notice--${notice.kind}`}
+              role={notice.kind === "error" ? "alert" : "status"}
+              data-testid={notice.kind === "error" ? "import-error" : "import-notice"}
+            >
+              {notice.text}
+              <button type="button" className="notice-close" onClick={() => setNotice(null)} aria-label="Dismiss message" data-testid="notice-close">
+                ×
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="cue-slot" data-testid="cue-slot">
+          <CountIn countIn={session.countIn} />
+          <SectionCard event={session.sectionEvent} />
+        </div>
+        {syncing && mode === "perform" && <SyncCard engine={engine} track={track} onApply={applyTapSync} onCancel={() => setSyncing(false)} />}
+
         <Karaoke
           engine={engine}
           timeline={timeline}
@@ -362,9 +449,6 @@ export default function App() {
           reducedMotion={reducedMotion}
           onPeak={onPeak}
         />
-        <ParticleLayer enabled={!reducedMotion} theme={theme} fxRef={fxRef} />
-        <CountIn countIn={session.countIn} />
-        <SectionCard event={session.sectionEvent} />
         {micOn && (
           <PitchLane
             engine={engine}
@@ -378,17 +462,7 @@ export default function App() {
           />
         )}
       </div>
-
-      {mode === "perform" && source.kind !== "none" && track.source === "demo" && !songOpen && (
-        <div className="lyrics-mismatch" role="status" data-testid="lyrics-mismatch">
-          <span>
-            Showing the <strong>demo lyrics</strong> — they won't match this song.
-          </span>
-          <button type="button" className="dock-btn dock-btn--accent" onClick={openSongLyrics} data-testid="lyrics-mismatch-fix">
-            Find this song's lyrics →
-          </button>
-        </div>
-      )}
+      <ParticleLayer enabled={!reducedMotion} theme={theme} fxRef={fxRef} />
 
       {session.score && mode === "perform" && <ScoreHud score={session.score} />}
 
@@ -406,61 +480,9 @@ export default function App() {
         title={shownTrack.title}
         artist={media ? `${shownTrack.artist || "—"} · ${media.name}` : source.kind === "youtube" ? `${shownTrack.artist || "—"} · YouTube` : shownTrack.artist}
         section={activeSection}
-        theme={theme}
-        onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-      >
-        <button
-          type="button"
-          className="icon-btn"
-          onClick={() => {
-            const next = !visualizer;
-            setVisualizer(next);
-            if (next) {
-              graph.ensureContext();
-              graph.resume();
-            }
-          }}
-          aria-pressed={visualizer}
-          aria-label={visualizer ? "Turn stage lights off" : "Turn stage lights on"}
-          title="Audio-reactive stage lights"
-          data-testid="visualizer-toggle"
-        >
-          <IconSparkle />
-        </button>
-        <button
-          type="button"
-          className="icon-btn"
-          onClick={fullscreen.toggle}
-          aria-pressed={fullscreen.active}
-          aria-label={fullscreen.active ? "Exit performance mode" : "Enter performance mode (fullscreen)"}
-          title="Performance mode (F)"
-          data-testid="btn-fullscreen"
-        >
-          {fullscreen.active ? <IconExitFullscreen /> : <IconFullscreen />}
-        </button>
-        <button
-          type="button"
-          className="icon-btn"
-          onClick={() => setEffects((e) => (e === "reduced" ? "auto" : "reduced"))}
-          aria-pressed={effects === "reduced"}
-          aria-label={effects === "reduced" ? "Enable full motion" : "Reduce motion"}
-          title="Reduce motion"
-          data-testid="effects-toggle"
-        >
-          ≈
-        </button>
-        <button
-          type="button"
-          className="icon-btn"
-          onClick={() => setMode((m) => (m === "studio" ? "perform" : "studio"))}
-          aria-pressed={mode === "studio"}
-          aria-label={mode === "studio" ? "Close Sync Studio" : "Open Sync Studio"}
-          title="Sync Studio — time your own lyrics"
-          data-testid="btn-studio"
-        >
-          <IconStudio />
-        </button>
-      </Header>
+        fullscreen={fullscreen.active}
+        onToggleFullscreen={fullscreen.toggle}
+      />
 
       <SongPanel
         open={songOpen}
@@ -473,22 +495,42 @@ export default function App() {
         onYouTube={handleYouTube}
         onClearSource={clearSource}
         onNudge={nudgeLyrics}
-        backingDuration={backingMeta?.duration || (source.kind === "file" ? playback.duration : 0)}
+        backingDuration={backingDuration}
         focusLyrics={songFocusLyrics > 0}
       />
 
-      {notice && (
-        <div
-          className={`notice notice--${notice.kind}`}
-          role={notice.kind === "error" ? "alert" : "status"}
-          data-testid={notice.kind === "error" ? "import-error" : "import-notice"}
-        >
-          {notice.text}
-          <button type="button" className="notice-close" onClick={() => setNotice(null)} aria-label="Dismiss message" data-testid="notice-close">
-            ×
-          </button>
-        </div>
-      )}
+      <MoreSheet
+        open={moreOpen && mode === "perform"}
+        onClose={() => setMoreOpen(false)}
+        engine={engine}
+        playback={playback}
+        track={track}
+        onNudge={nudgeLyrics}
+        onStartTapSync={startTapSync}
+        showVocal={!!media && playback.sourceKind === "media" && graph.supported}
+        vocalLevel={vocalLevel}
+        vocalMono={vocalMono}
+        onVocalLevel={setVocalLevel}
+        difficulty={difficulty}
+        onDifficulty={setDifficulty}
+        micLatencyMs={micLatencyMs}
+        onMicLatency={setMicLatencyMs}
+        demoSound={demoSound}
+        onDemoSound={setDemoSound}
+        theme={theme}
+        onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+        visualizer={visualizer}
+        onToggleVisualizer={toggleVisualizer}
+        effects={effects}
+        onToggleEffects={() => setEffects((e) => (e === "reduced" ? "auto" : "reduced"))}
+        onMediaFile={handleFileUpload}
+        onLyricsFile={handleImportFile}
+        onOpenStudio={() => {
+          setMoreOpen(false);
+          setSyncing(false);
+          setMode("studio");
+        }}
+      />
 
       {mode === "studio" ? (
         <SyncStudio
@@ -501,25 +543,15 @@ export default function App() {
           onClose={() => setMode("perform")}
         />
       ) : (
-        <ControlsDock engine={engine} playback={playback} onFileUpload={handleFileUpload}>
-          {media && playback.sourceKind === "media" && (
-            <VocalControl engine={engine} graph={graph} sourceKey={media.url} level={vocalLevel} onLevel={setVocalLevel} />
-          )}
-          <button type="button" className="dock-btn dock-btn--accent" onClick={() => setSongOpen(true)} aria-label="Find a song" data-testid="btn-find-song">
-            <IconSearch /> Find song
-          </button>
-          <LibraryButtons track={track} onImportFile={handleImportFile} />
-          <MicControls
-            mic={mic}
-            onToggleMic={toggleMic}
-            difficulty={difficulty}
-            onDifficulty={setDifficulty}
-            micLatencyMs={micLatencyMs}
-            onMicLatency={setMicLatencyMs}
-            demoSound={demoSound}
-            onDemoSound={setDemoSound}
-          />
-        </ControlsDock>
+        <ThumbBar
+          engine={engine}
+          playback={playback}
+          mic={mic}
+          onToggleMic={toggleMic}
+          onFindSong={() => setSongOpen(true)}
+          onMore={() => setMoreOpen((o) => !o)}
+          moreOpen={moreOpen}
+        />
       )}
     </div>
   );

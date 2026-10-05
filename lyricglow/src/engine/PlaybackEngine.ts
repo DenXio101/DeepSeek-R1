@@ -34,6 +34,21 @@ export interface PlaybackSnapshot {
 
 export const MIN_RATE = 0.5;
 export const MAX_RATE = 2.0;
+/** fresh media-time reports within this window of our clock are glided into, not snapped */
+const SLEW_WINDOW = 0.3;
+/** seconds over which a timing error is worked off */
+const SLEW_TIME = 0.25;
+
+/**
+ * Advance `cur` by one frame toward `target` without ever stepping backwards or stalling:
+ * between 0.5× and 1.5× nominal speed, so a correction is spread over ~SLEW_TIME.
+ */
+function glide(cur: number, target: number, dt: number, rate: number): number {
+  const nominal = dt * rate;
+  const want = (target - cur) * Math.min(1, dt / SLEW_TIME);
+  const adj = Math.max(-nominal * 0.5, Math.min(nominal * 0.5, want));
+  return cur + nominal + adj;
+}
 
 export class PlaybackEngine {
   readonly frame: Frame = { time: 0, dt: 0, rate: 1, playing: false, now: 0, generation: 0 };
@@ -151,15 +166,17 @@ export class PlaybackEngine {
       const tr = this.transport;
       const t = tr.time();
       if (this.playingFlag && t === this.lastMediaTime) {
-        // source hasn't advanced its clock yet: extrapolate (bounded), never slipping back by a hair
+        // source hasn't advanced its clock yet: extrapolate (bounded) and glide toward that estimate
         const est = Math.min(t + ((now - this.lastMediaNow) / 1000) * f.rate, t + tr.extrapolation);
-        f.time = f.time > est && f.time - est < 0.05 ? f.time : est;
+        f.time = glide(f.time, est, dt, f.rate);
       } else {
         const wasPlaying = this.playingFlag && this.lastMediaTime >= 0;
         this.lastMediaTime = t;
         this.lastMediaNow = now;
-        // a fresh value slightly behind our estimate: keep moving forward from the estimate (a real seek jumps)
-        f.time = wasPlaying && f.time > t && f.time - t < 0.05 ? f.time + dt * f.rate * 0.5 : t;
+        // A fresh report close to our clock (iframe clocks tick a few times a second and jitter):
+        // keep gliding instead of snapping, so the lyrics never stutter. The first value after
+        // play/seek, or a real jump, still snaps.
+        f.time = wasPlaying && Math.abs(t - f.time) < SLEW_WINDOW ? glide(f.time, t, dt, f.rate) : t;
       }
     } else {
       if (this.playingFlag) {
