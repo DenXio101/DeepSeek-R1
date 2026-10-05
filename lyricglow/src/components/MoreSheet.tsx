@@ -27,6 +27,8 @@ interface Props {
   onDifficulty: (d: Difficulty) => void;
   micLatencyMs: number;
   onMicLatency: (ms: number) => void;
+  guideLevel: number;
+  onGuideLevel: (v: number) => void;
   demoSound: boolean;
   onDemoSound: (on: boolean) => void;
   theme: Theme;
@@ -116,6 +118,19 @@ export default function MoreSheet(p: Props) {
               </select>
             </label>
             <label>
+              Guide cue {p.guideLevel === 0 ? "off" : `${Math.round(p.guideLevel * 100)}%`}
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                value={Math.round(p.guideLevel * 100)}
+                onChange={(e) => p.onGuideLevel(Number(e.target.value) / 100)}
+                aria-label="Guide cue volume (soft hum before each line, tick on each word)"
+                data-testid="guide-level"
+              />
+            </label>
+            <label>
               Mic latency {p.micLatencyMs} ms
               <input
                 type="range"
@@ -133,7 +148,9 @@ export default function MoreSheet(p: Props) {
               Demo melody when no backing track is loaded
             </label>
           </div>
-          <p className="settings-hint">Use headphones so the backing track isn't scored instead of you. On iPhone the mic may lower media volume.</p>
+          <p className="settings-hint">
+            The guide cue is a very quiet hum just before each line and a soft tick on every word — an audible hint for your entry over the real recording. Use headphones so the backing track isn't scored instead of you. On iPhone the mic may lower media volume.
+          </p>
         </div>
 
         <div className="sheet-section">

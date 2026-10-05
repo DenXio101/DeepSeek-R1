@@ -26,6 +26,7 @@ import { useAudioGraph } from "./engine/useAudioGraph";
 import { isIOS, useReducedMotion, type EffectsLevel } from "./hooks/useReducedMotion";
 import { PitchTracker } from "./engine/PitchTracker";
 import { DemoSynth } from "./engine/DemoSynth";
+import { GuideSynth } from "./engine/GuideSynth";
 import type { Difficulty } from "./engine/scoring";
 import PitchLane from "./components/PitchLane";
 import ScoreHud from "./components/ScoreHud";
@@ -61,6 +62,7 @@ export default function App() {
   const [difficulty, setDifficulty] = useState<Difficulty>("normal");
   const [micLatencyMs, setMicLatencyMs] = useState(60);
   const [demoSound, setDemoSound] = useState(true);
+  const [guideLevel, setGuideLevel] = useState(0.25);
   const [vocalLevel, setVocalLevel] = useState(0.35);
   const iosHintShown = useRef(false);
   const [gradeDismissed, setGradeDismissed] = useState(-1);
@@ -160,11 +162,31 @@ export default function App() {
   // AudioContext must be created/resumed inside the user's Play gesture
   useEffect(() => {
     engine.setBeforePlay(() => {
-      if (graph.ctx || engine.getSnapshot().sourceKind === "demo") graph.ensureContext();
+      // the guide cue and the demo melody both need a context created inside this gesture
+      graph.ensureContext();
       graph.resume();
     });
     return () => engine.setBeforePlay(null);
   }, [engine, graph]);
+
+  // the guide cue: a very quiet hum before each line + tick per word over real backing tracks
+  const guideRef = useRef<GuideSynth | null>(null);
+  const guideLevelRef = useRef(guideLevel);
+  const guideActive = playback.sourceKind !== "demo" && mode === "perform";
+  useEffect(() => {
+    if (!guideActive) return;
+    const synth = new GuideSynth(graph, timeline, guideLevelRef.current);
+    guideRef.current = synth;
+    const off = synth.attach(engine);
+    return () => {
+      off();
+      if (guideRef.current === synth) guideRef.current = null;
+    };
+  }, [guideActive, graph, timeline, engine]);
+  useEffect(() => {
+    guideLevelRef.current = guideLevel;
+    guideRef.current?.setLevel(guideLevel);
+  }, [guideLevel]);
 
   // the demo sings: synthesized melody + beat while no backing track is loaded
   const isDemoSource = playback.sourceKind === "demo";
@@ -542,6 +564,8 @@ export default function App() {
         onDifficulty={setDifficulty}
         micLatencyMs={micLatencyMs}
         onMicLatency={setMicLatencyMs}
+        guideLevel={guideLevel}
+        onGuideLevel={setGuideLevel}
         demoSound={demoSound}
         onDemoSound={setDemoSound}
         theme={theme}
