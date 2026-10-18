@@ -1,4 +1,5 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
+import { useModalFocus } from "../hooks/useModalFocus";
 import type { PlaybackEngine, PlaybackSnapshot } from "../engine/PlaybackEngine";
 import { MAX_RATE, MIN_RATE } from "../engine/PlaybackEngine";
 import { DIFFICULTIES, type Difficulty } from "../engine/scoring";
@@ -53,14 +54,16 @@ export default function MoreSheet(p: Props) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
+  const sheetRef = useRef<HTMLElement>(null);
+  useModalFocus(open, sheetRef, "[data-testid=more-close]");
 
-  if (!open) return null;
   const stem = safeFileStem(p.track.title);
+  if (!open) return null;
   const rate = p.playback.rate;
 
   return (
     <div className="sheet-backdrop" onClick={onClose} data-testid="more-sheet-backdrop">
-      <section className="sheet sheet--more" role="dialog" aria-modal="true" aria-label="More options" onClick={(e) => e.stopPropagation()} data-testid="more-sheet">
+      <section ref={sheetRef} className="sheet sheet--more" role="dialog" aria-modal="true" aria-label="More options" onClick={(e) => e.stopPropagation()} data-testid="more-sheet">
         <header className="sheet-head">
           <h2 className="sheet-title">More</h2>
           <button type="button" className="dock-btn" onClick={onClose} aria-label="Close" data-testid="more-close">

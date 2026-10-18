@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useModalFocus } from "../hooks/useModalFocus";
 import type { Track } from "../lyrics";
 import { formatDuration, searchLyrics, type LyricsSearchHit } from "../model/lrclib";
 import { parseYouTubeId, youtubeSearchUrl } from "../engine/youtube";
@@ -114,9 +115,19 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
     return () => window.clearTimeout(id);
   }, [query]);
 
+  const sheetRef = useRef<HTMLElement>(null);
+  useModalFocus(open, sheetRef, "[data-testid=song-search-input]");
   useEffect(() => {
-    if (open) window.setTimeout(() => inputRef.current?.focus(), 50);
+    if (open && focusLyrics) window.setTimeout(() => inputRef.current?.focus(), 50);
   }, [open, focusLyrics]);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
 
   // auto-suggest videos for the current song whenever it changes while the panel is open
   const autoQuery = officialQuery(track.title, track.artist);
@@ -156,7 +167,7 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
 
   return (
     <div className="sheet-backdrop" onClick={onClose} data-testid="song-panel-backdrop">
-      <section className="sheet" role="dialog" aria-modal="true" aria-label="Find a song" onClick={(e) => e.stopPropagation()} data-testid="song-panel">
+      <section ref={sheetRef} className="sheet" role="dialog" aria-modal="true" aria-label="Find a song" onClick={(e) => e.stopPropagation()} data-testid="song-panel">
         <header className="sheet-head">
           <h2 className="sheet-title">Find a song</h2>
           <button type="button" className="dock-btn" onClick={onClose} aria-label="Close" data-testid="song-panel-close">

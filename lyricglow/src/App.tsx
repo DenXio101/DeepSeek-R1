@@ -63,6 +63,10 @@ const RESYNC_S = (() => {
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>("dark");
+  useEffect(() => {
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#0a0a0e" : "#f5f0e8");
+    document.documentElement.style.colorScheme = theme;
+  }, [theme]);
   const [track, setTrack] = useState<Track>(() => normalizeTrack(demoTrack));
   const [notice, setNotice] = useState<{ kind: "error" | "info"; text: string } | null>(null);
   const [mode, setMode] = useState<"perform" | "studio">("perform");
@@ -255,7 +259,7 @@ export default function App() {
       setBackingMeta(meta ?? null);
       // remember the other official uploads so an embed-blocked pick can hop to the next one
       ytQueueRef.current = alternates ? { videoId, rest: alternates, hops: ytQueueRef.current?.videoId === videoId ? ytQueueRef.current.hops : 0 } : null;
-      setNotice({ kind: "info", text: "Loading YouTube video… press ▶ when it appears." });
+      setNotice({ kind: "info", text: "Loading YouTube video… press Play when it appears." });
 
       // auto-match lyrics unless the loaded track already is this song
       const run = ++autoMatchRef.current;
@@ -515,6 +519,14 @@ export default function App() {
       data-generation={playback.generation}
       data-testid="app-root"
     >
+      <Header
+        title={shownTrack.title}
+        artist={media ? `${shownTrack.artist || "—"} · ${media.name}` : source.kind === "youtube" ? `${shownTrack.artist || "—"} · YouTube` : listening ? `${shownTrack.artist || "—"} · Live (listening)` : shownTrack.artist}
+        section={activeSection}
+        fullscreen={fullscreen.active}
+        onToggleFullscreen={fullscreen.toggle}
+      />
+
       <div className="stage-bg" aria-hidden="true">
         <div className="stage-grain" />
         {source.kind === "none" || source.kind === "listen" || (source.kind === "file" && source.mediaKind === "audio") ? (
@@ -533,13 +545,14 @@ export default function App() {
           engine={engine}
           videoId={source.videoId}
           onError={handleYouTubeError}
-          onReady={() => setNotice((prev) => (prev && !prev.text.startsWith("Loading YouTube") ? prev : { kind: "info", text: "YouTube ready — press ▶ to sing." }))}
+          onReady={() => setNotice((prev) => (prev && !prev.text.startsWith("Loading YouTube") ? prev : { kind: "info", text: "YouTube ready — press Play to sing." }))}
         />
       )}
 
       <SpectrumCanvas engine={engine} graph={graph} timeline={timeline} visible={visualizer} reducedMotion={reducedMotion} theme={theme} />
 
-      <div className="lyric-overlay">
+      <h1 className="sr-only">LyricGlow karaoke stage</h1>
+      <main className="lyric-overlay" aria-label="Lyrics stage">
         <div className="stage-toasts" data-testid="stage-toasts">
           {demoMismatch && (
             <div className="lyrics-mismatch" role="status" data-testid="lyrics-mismatch">
@@ -606,7 +619,7 @@ export default function App() {
             micLatency={micLatencyMs / 1000}
           />
         )}
-      </div>
+      </main>
       <ParticleLayer enabled={!reducedMotion} theme={theme} fxRef={fxRef} />
 
       {session.score && mode === "perform" && <ScoreHud score={session.score} />}
@@ -621,13 +634,6 @@ export default function App() {
         />
       )}
 
-      <Header
-        title={shownTrack.title}
-        artist={media ? `${shownTrack.artist || "—"} · ${media.name}` : source.kind === "youtube" ? `${shownTrack.artist || "—"} · YouTube` : listening ? `${shownTrack.artist || "—"} · Live (listening)` : shownTrack.artist}
-        section={activeSection}
-        fullscreen={fullscreen.active}
-        onToggleFullscreen={fullscreen.toggle}
-      />
 
       <SongPanel
         open={songOpen}

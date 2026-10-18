@@ -1,4 +1,6 @@
+import { useRef } from "react";
 import type { ScoreSummary } from "../engine/scoring";
+import { useModalFocus } from "../hooks/useModalFocus";
 
 interface Props {
   title: string;
@@ -9,8 +11,10 @@ interface Props {
 }
 
 export default function GradeScreen({ title, summary, micOn, onSingAgain, onClose }: Props) {
+  const ref = useRef<HTMLDivElement>(null);
+  useModalFocus(true, ref, "[data-testid=btn-sing-again]");
   return (
-    <div className="grade-backdrop" data-testid="grade-screen" role="dialog" aria-modal="true" aria-label="Performance result">
+    <div className="grade-backdrop" data-testid="grade-screen" role="dialog" aria-modal="true" aria-label="Performance result" ref={ref}>
       <div className="grade-card">
         <p className="grade-kicker">{summary ? "Your performance" : "Song complete"}</p>
         <h2 className="grade-title">{title}</h2>
