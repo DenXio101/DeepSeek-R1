@@ -339,6 +339,21 @@ export class PlaybackEngine {
     this.requestFrame();
   }
 
+  /**
+   * Shift the clock by `delta` seconds WITHOUT a generation bump (no FLIP reset, cue ball
+   * keeps gliding). Used by Listen mode to correct small drift against the room.
+   * Transports can't be shifted silently, so they seek.
+   */
+  nudge(delta: number): void {
+    if (this.transport) {
+      this.seek(this.frame.time + delta);
+      return;
+    }
+    this.songTime = Math.max(0, Math.min(this.demoDuration, this.songTime + delta));
+    this.frame.time = this.songTime;
+    this.requestFrame();
+  }
+
   restart(): void {
     this.seek(0);
     this.play();

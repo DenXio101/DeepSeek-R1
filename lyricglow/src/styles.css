@@ -768,3 +768,29 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 [data-motion="reduced"] .app-header, [data-motion="reduced"] .controls-dock { transition: opacity 0.2s ease; }
 @keyframes section-card-still { 0% { opacity: 0; } 15% { opacity: 1; } 80% { opacity: 1; } 100% { opacity: 0; } }
 @keyframes rating-still { 0% { opacity: 0; } 15% { opacity: 1; } 80% { opacity: 1; } 100% { opacity: 0; } }
+
+/* ── Listen mode (Shazam-style) ──────────────────────────────────────────── */
+.listen-pill {
+  position: relative; display: flex; align-items: center; gap: 10px; z-index: 40;
+  max-width: min(94vw, 600px); padding: 7px 36px 7px 12px; border-radius: 999px; font-size: 0.82rem;
+  background: var(--bg-panel); border: 1px solid rgba(0, 212, 255, 0.45); backdrop-filter: blur(10px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+}
+.listen-pill--nohear, .listen-pill--error { border-color: rgba(244, 160, 192, 0.6); }
+.listen-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 10px var(--cyan-glow); flex-shrink: 0; }
+.listen-pill--listening .listen-dot, .listen-pill--starting .listen-dot { animation: listen-pulse 1.1s ease-in-out infinite; }
+.listen-pill--following .listen-dot { background: var(--gold); box-shadow: 0 0 10px var(--gold-glow); }
+.listen-pill--nohear .listen-dot, .listen-pill--error .listen-dot { background: var(--rose); box-shadow: none; }
+@keyframes listen-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.6); opacity: 0.45; } }
+[data-motion="reduced"] .listen-pill .listen-dot { animation: none; }
+.listen-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.listen-close { right: 4px; }
+.listen-now { flex-shrink: 0; font-size: 1rem; line-height: 1; padding: 2px 8px; }
+.listen-start {
+  display: inline-flex; align-items: center; gap: 8px; padding: 11px 18px; border-radius: 999px; cursor: pointer; font-weight: 700; font-size: 0.95rem;
+  background: linear-gradient(135deg, rgba(0, 212, 255, 0.25), rgba(0, 212, 255, 0.08)); border: 1px solid var(--cyan); color: var(--text-primary);
+  touch-action: manipulation;
+}
+.listen-start svg { width: 1.2em; height: 1.2em; fill: currentColor; }
+.listen-start:hover { background: rgba(0, 212, 255, 0.3); }
+.listen-start[aria-pressed="true"] { background: rgba(0, 212, 255, 0.35); box-shadow: 0 0 14px var(--cyan-glow); }

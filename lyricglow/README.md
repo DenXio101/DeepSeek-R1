@@ -22,6 +22,7 @@ npm run check:model  # fixture checks: syllables, LRC, round-trips, pitch, scori
 | **Voice level** | For your own MP3/MP4: a **Voice** slider (default 35 %) uses centre-channel reduction to turn the original singer into a faint guide while keeping the band and the bass. Auto-bypasses on mono files. Not possible for YouTube (browsers hide its audio). |
 | **Song sync** | Import `.lrc` (standard `[mm:ss.xx]` and enhanced `<mm:ss.xx>` word timing, Walaoke `M:`/`F:`/`D:` prefixes, `[v:]` tags, `[Chorus]`‑style section markers, `[offset:]`) or LyricGlow `.json`. Plain‑timed lines get syllable timing from a built‑in English syllable estimator. Export enhanced LRC or lossless JSON. |
 | **Sync Studio** | Paste lyrics, pick voices per line, play the song and tap <kbd>Space</kbd> on every syllable (<kbd>Enter</kbd> ends a line, <kbd>Backspace</kbd> undoes, <kbd>Esc</kbd> play/pause, <kbd>,</kbd>/<kbd>.</kbd> adjust tap latency). Review with ±10/±50 ms nudge, re‑tap from any line, download, or use it in the player. The stage previews your timing live. |
+| **Listen mode** | Shazam-style: play the song anywhere (YouTube Music, Spotify, a speaker, a karaoke machine), tap **Listen & follow** in the song sheet, and LyricGlow records 6 s from the mic, recognises the song **and its position** through ACRCloud, loads the LRCLIB lyrics and starts the lyric clock there. It re-checks every 25 s and nudges the clock by the measured drift (seeks only for jumps > 1.5 s), pauses checks while paused, and tells you when it can't hear a song. The scoring mic stays separate. Needs the server keys below; without them the button says so. |
 | **Guide cue** | Over a real backing track (file or YouTube) a very quiet synthesized **guide**: a soft hum breathes in 0.22 s before every line (pitched to the line's first note when the lyrics carry one, else a gentle pitch per voice) and a faint tick marks each word onset — an audible hint for your entry alongside the cue ball. Default 25 %, slider under More → Singing, 0 = off. Mixed straight to the speakers, never into the stage analyser. |
 | **Mic & scoring** | Web Audio pitch detection (McLeod Pitch Method, hand‑written). Pitch lane under the lyric with target bars per syllable, folded to one octave so your register doesn't matter. Per‑syllable pitch + timing scoring (timing‑only when a syllable has no note), combo multiplier, line ratings, S–E grade with a "Partial" flag. Easy/Normal/Hard tolerances and a mic‑latency slider. Nothing from the mic is routed to the speakers. |
 | **Stage** | A toned-down abstract **mosaic** (jittered triangular lattice in the palette at ≤ 10 % alpha, drifting and breathing with the song) fills the stage when no video is showing. Audio‑reactive footlights and bass‑pulsing spotlights/vignette (from an analyser on your media, or a BPM‑synced pulse for the demo), 3‑2‑1 count‑in before lines after a gap, section title cards with a light sweep, ember bursts on peak words, a golden finale, fullscreen performance mode that hides the chrome after 3 s idle. Dark/light themes; lyrics sit in the upper half of the screen with the controls on a bottom **thumb bar** (Song · Restart · Play · oblong mic switch · More), so a phone held in one hand works in portrait and landscape. Honors `prefers-reduced-motion` plus an in‑app toggle. |
@@ -41,7 +42,19 @@ npm run check:model  # fixture checks: syllables, LRC, round-trips, pitch, scori
 
 YouTube notes: the player must stay visible (YouTube terms), the stage lights follow the song's BPM rather than the audio (browsers don't expose YouTube's sound), tempo snaps to YouTube's rates (0.5/0.75/1/1.25/1.5/2), and videos whose uploader disabled embedding show an error — try another upload.
 
-### Keyboard (player)
+### Listen mode setup (ACRCloud)
+
+Recognition runs through `api/recognize.ts`, a Vercel function that signs the request so the secret never reaches the browser. Create an ACRCloud account → Console → **Audio & Video Recognition** → new project (bucket *ACRCloud Music*, type *Audio*) and set three **server-only** environment variables on the Vercel project (no `VITE_` prefix):
+
+```
+ACR_HOST=identify-eu-west-1.acrcloud.com   # the host shown in your project
+ACR_ACCESS_KEY=…
+ACR_ACCESS_SECRET=…
+```
+
+The function accepts an 8 kHz mono 16-bit WAV of ≤ 600 KB, rate-limits to 20 requests per minute per IP, and returns `{ ok, match | null, code }`. ACRCloud's `db_end_time_offset_ms` / `sample_end_time_offset_ms` give the track position at the end of the sample; the client adds the elapsed time since the capture ended. On iPhone, Safari may pause music playing on the same phone when the mic opens — put the music on another device or a speaker.
+
+## Keyboard (player)
 
 <kbd>Space</kbd>/<kbd>K</kbd> play‑pause · <kbd>←</kbd>/<kbd>→</kbd> seek 5 s · <kbd>[</kbd>/<kbd>]</kbd> lyrics 0.1 s earlier/later · <kbd>F</kbd> performance mode · <kbd>M</kbd> microphone · <kbd>R</kbd> restart
 
@@ -82,10 +95,11 @@ interface Track { title; artist; bpm; lines; offset?; duration?; beatOffset?; se
 ```
 src/
   engine/      PlaybackEngine (single rAF clock; Transport = <audio>/<video> or YouTube; snapshots via useSyncExternalStore)
-               DemoSynth · GuideSynth · Transport.ts (media adapter) · youtube.ts (IFrame API loader, URL parser, transport)
+               DemoSynth · GuideSynth · Listener (room capture → /api/recognize) · Transport.ts (media adapter) · youtube.ts (IFrame API loader, URL parser, transport)
                KaraokeSession (active line, count‑ins, sections, scoring) · AudioGraph · PitchTracker
                pitch.ts (MPM) · scoring.ts (pure) · beat.ts
-  model/       lyrics types/helpers · normalize · timeline · syllables · lrc · trackIO · lrclib (search client) · songMatch · sync (tap-to-sync)
+  model/       lyrics types/helpers · normalize · timeline · syllables · lrc · trackIO · lrclib (search client) · songMatch · sync (tap-to-sync) · acr (ACRCloud helpers) · wav
+  api/         recognize.ts — Vercel function forwarding snippets to ACRCloud (server-only keys)
   components/  Karaoke (imperative per‑frame DOM writes, rect cache) · CueBall math · PitchLane
                MosaicBackdrop · SpectrumCanvas · ParticleLayer · CountIn · SectionCard · ScoreHud · GradeScreen
                Header · ThumbBar (seek · Song · Restart · Play · MicSwitch · More) · MoreSheet · SyncControl/SyncCard

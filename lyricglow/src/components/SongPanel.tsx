@@ -4,7 +4,7 @@ import { formatDuration, searchLyrics, type LyricsSearchHit } from "../model/lrc
 import { parseYouTubeId, youtubeSearchUrl } from "../engine/youtube";
 import { classifyUpload, kindLabel, officialQuery, rankHits, searchYouTube, youtubeApiKey, type YouTubeHit } from "../model/youtubeSearch";
 import { fitsDuration, sortHitsForBacking, type VideoMeta } from "../model/songMatch";
-import { IconUpload } from "./Icons";
+import { IconMic, IconUpload } from "./Icons";
 
 /** an alternative official upload the app may hop to when the chosen one can't be embedded */
 export interface YouTubeCandidate {
@@ -15,7 +15,9 @@ export interface YouTubeCandidate {
 export type BackingSource =
   | { kind: "none" }
   | { kind: "file"; url: string; mediaKind: "audio" | "video"; name: string }
-  | { kind: "youtube"; videoId: string };
+  | { kind: "youtube"; videoId: string }
+  /** Listen mode: the song plays in the room; the mic recognises it and the lyric clock follows */
+  | { kind: "listen" };
 
 interface Props {
   open: boolean;
@@ -34,13 +36,17 @@ interface Props {
   backingMeta?: VideoMeta | null;
   /** focus the lyrics box when opened (e.g. from the mismatch banner) */
   focusLyrics?: boolean;
+  onListen: () => void;
+  listening: boolean;
+  /** server said recognition keys are missing */
+  listenUnavailable?: boolean;
 }
 
 /**
  * "Find a song": search synced lyrics (LRCLIB), choose a backing track
  * (local file or YouTube link) and fine-tune lyric timing.
  */
-export default function SongPanel({ open, onClose, track, source, onPickSynced, onPickPlain, onFile, onYouTube, onClearSource, onNudge, backingDuration, backingMeta, focusLyrics }: Props) {
+export default function SongPanel({ open, onClose, track, source, onPickSynced, onPickPlain, onFile, onYouTube, onClearSource, onNudge, backingDuration, backingMeta, focusLyrics, onListen, listening, listenUnavailable }: Props) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<LyricsSearchHit[]>([]);
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
@@ -158,6 +164,21 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
           </button>
         </header>
 
+        {/* ── 0. listen to the room ── */}
+        <div className="sheet-section">
+          <div className="sheet-label">Listen to the room (Shazam-style)</div>
+          <div className="studio-row">
+            <button type="button" className="listen-start" onClick={onListen} aria-pressed={listening} disabled={!!listenUnavailable} data-testid="listen-start">
+              <IconMic /> {listening ? "Listening…" : "Listen & follow"}
+            </button>
+            <span className="song-hint" data-testid="listen-hint">
+              {listenUnavailable
+                ? "Song recognition isn't set up on this server yet."
+                : "Play the song anywhere — YouTube Music, Spotify, a speaker. LyricGlow recognises it and keeps the words in step, re-checking every half minute. Best with the music on another device or a speaker."}
+            </span>
+          </div>
+        </div>
+
         {/* ── 1. lyrics ── */}
         <div className="sheet-section">
           <div className="sheet-label">1 · Lyrics</div>
@@ -226,6 +247,7 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
           </div>
           <div className="song-source" data-testid="song-source">
             {source.kind === "none" && <span className="song-hint">None yet — the virtual clock plays the lyrics silently.</span>}
+            {source.kind === "listen" && <span>Listening to the room (mic)</span>}
             {source.kind === "file" && (
               <span>
                 File: <strong>{source.name}</strong>

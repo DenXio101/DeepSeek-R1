@@ -15,6 +15,9 @@ import { trackFromHit, type LyricsSearchHit } from "../src/model/lrclib";
 import { cleanVideoTitle, pickLyricsForVideo, trackMatchesVideo } from "../src/model/songMatch";
 import { TAP_REACTION_S, formatOffset, lineLabel, offsetForTap, upcomingLine } from "../src/model/sync";
 import { classifyUpload, isOfficialKind, officialQuery, rankHits, type YouTubeHit } from "../src/model/youtubeSearch";
+import { acrStringToSign, parseAcrResponse, positionAtCaptureEnd } from "../src/model/acr";
+import { downsample, encodeWav16, readWavHeader } from "../src/model/wav";
+import { createHmac } from "node:crypto";
 import { PlaybackEngine } from "../src/engine/PlaybackEngine";
 import type { Transport } from "../src/engine/Transport";
 
@@ -266,6 +269,26 @@ const ranked = rankHits(
 );
 ok(ranked.map((h) => h.videoId).join(",") === "t1,t2,o,a,k", `rank: topic (closest length first) → official → artist → unofficial last (${ranked.map((h) => h.videoId).join(",")})`);
 ok(officialQuery("Bad Romance", "Lady Gaga") === "Bad Romance Lady Gaga" && officialQuery("Bad Romance", "Unknown artist") === "Bad Romance", "officialQuery drops the karaoke suffix and unknown artists");
+
+console.log("\nlisten mode (ACRCloud helpers + WAV)");
+ok(acrStringToSign("KEY123", 1700000000) === "POST\n/v1/identify\nKEY123\naudio\n1\n1700000000", "string to sign: method, uri, key, data_type, version, timestamp joined by newlines");
+ok(createHmac("sha1", "secret").update(acrStringToSign("KEY123", 1700000000)).digest("base64").length === 28, "HMAC-SHA1 base64 signature is 28 chars");
+const acrOk = parseAcrResponse({ status: { code: 0, msg: "Success" }, metadata: { music: [{ title: "Bad Romance", artists: [{ name: "Lady Gaga" }], album: { name: "The Fame Monster" }, duration_ms: 294000, play_offset_ms: 42000, sample_end_time_offset_ms: 5800, db_end_time_offset_ms: 41800, score: 100 }] } });
+ok(acrOk.ok && acrOk.match?.title === "Bad Romance" && acrOk.match.artist === "Lady Gaga" && acrOk.match.playOffsetMs === 42000, "success response → match");
+const acrNo = parseAcrResponse({ status: { code: 1001, msg: "No result" } });
+ok(acrNo.ok && acrNo.match === null && acrNo.code === 1001, "1001 → ok with no match");
+const acrQuota = parseAcrResponse({ status: { code: 3003, msg: "Limit exceeded" } });
+ok(!acrQuota.ok && acrQuota.status === 429, "3003 → 429 quota");
+const acrKeys = parseAcrResponse({ status: { code: 3014, msg: "Invalid signature" } });
+ok(!acrKeys.ok && acrKeys.status === 502 && /keys/.test(acrKeys.error), "3014 → keys error");
+ok(acrOk.ok && acrOk.match && Math.abs(positionAtCaptureEnd(acrOk.match, 6) - (41.8 + (6 - 5.8))) < 1e-9, "position at capture end from matched-segment offsets");
+ok(Math.abs(positionAtCaptureEnd({ playOffsetMs: 42000 }, 6) - 42) < 1e-9, "falls back to play_offset_ms");
+const sine = new Float32Array(48000 * 2).map((_, i) => Math.sin((2 * Math.PI * 440 * i) / 48000) * 0.5);
+const ds = downsample(sine, 48000, 8000);
+ok(ds.length === 16000, `downsample 48 k → 8 k keeps duration (${ds.length} samples)`);
+const wav = encodeWav16(ds, 8000);
+const hdr = readWavHeader(wav);
+ok(!!hdr && hdr.sampleRate === 8000 && hdr.channels === 1 && hdr.bits === 16 && hdr.dataBytes === 32000 && wav.byteLength === 44 + 32000, `WAV header ${JSON.stringify(hdr)} / ${wav.byteLength} bytes`);
 
 console.log("\ntap-to-sync");
 const demoN = normalizeTrack(demoTrack);

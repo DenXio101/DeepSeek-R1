@@ -27,6 +27,10 @@ import { isIOS, useReducedMotion, type EffectsLevel } from "./hooks/useReducedMo
 import { PitchTracker } from "./engine/PitchTracker";
 import { DemoSynth } from "./engine/DemoSynth";
 import { GuideSynth } from "./engine/GuideSynth";
+import { useListener } from "./engine/useListener";
+import type { Capture, RecognizeOutcome } from "./engine/Listener";
+import { positionAtCaptureEnd } from "./model/acr";
+import ListenPill from "./components/ListenPill";
 import type { Difficulty } from "./engine/scoring";
 import PitchLane from "./components/PitchLane";
 import ScoreHud from "./components/ScoreHud";
@@ -47,6 +51,14 @@ import "./styles.css";
 const VERSION_MISMATCH_S = 3;
 /** how many embed-blocked official uploads to skip past automatically */
 const MAX_HOPS = 3;
+/** Listen mode: seconds between room checks (dev builds accept ?listenEvery=N for tests) */
+const RESYNC_S = (() => {
+  if (import.meta.env.DEV) {
+    const n = Number(new URLSearchParams(window.location.search).get("listenEvery"));
+    if (n >= 1) return n;
+  }
+  return 25;
+})();
 
 
 export default function App() {
@@ -78,6 +90,8 @@ export default function App() {
   const [songFocusLyrics, setSongFocusLyrics] = useState(0);
   const [backingMeta, setBackingMeta] = useState<VideoMeta | null>(null);
   const ytQueueRef = useRef<{ videoId: string; rest: YouTubeCandidate[]; hops: number } | null>(null);
+  const [listenSong, setListenSong] = useState<{ title: string; artist: string } | null>(null);
+  const [listenSetup, setListenSetup] = useState<"unknown" | "missing">("unknown");
   const autoMatchRef = useRef(0);
   // latest track for async callbacks
   const trackRef = useRef<Track | null>(null);
@@ -172,7 +186,8 @@ export default function App() {
   // the guide cue: a very quiet hum before each line + tick per word over real backing tracks
   const guideRef = useRef<GuideSynth | null>(null);
   const guideLevelRef = useRef(guideLevel);
-  const guideActive = playback.sourceKind !== "demo" && mode === "perform";
+  const listening = source.kind === "listen";
+  const guideActive = (playback.sourceKind !== "demo" || listening) && mode === "perform";
   useEffect(() => {
     if (!guideActive) return;
     const synth = new GuideSynth(graph, timeline, guideLevelRef.current);
@@ -191,10 +206,10 @@ export default function App() {
   // the demo sings: synthesized melody + beat while no backing track is loaded
   const isDemoSource = playback.sourceKind === "demo";
   useEffect(() => {
-    if (!isDemoSource || !demoSound || mode === "studio") return;
+    if (!isDemoSource || !demoSound || mode === "studio" || listening) return;
     const synth = new DemoSynth(graph, timeline);
     return synth.attach(engine);
-  }, [isDemoSource, demoSound, mode, graph, timeline, engine]);
+  }, [isDemoSource, demoSound, mode, graph, timeline, engine, listening]);
 
   useEffect(() => {
     if (playback.playing && isDemoSource && demoSound && isIOS() && !iosHintShown.current) {
@@ -292,9 +307,87 @@ export default function App() {
   const clearSource = useCallback(() => {
     setSource({ kind: "none" });
     setBackingMeta(null);
+    setListenSong(null);
     ytQueueRef.current = null;
     autoMatchRef.current++;
   }, []);
+
+  // ── Listen mode (Shazam-style): the room plays the song, we recognise it and follow ──
+  const startListen = useCallback(() => {
+    graph.ensureContext();
+    graph.resume();
+    autoMatchRef.current++;
+    ytQueueRef.current = null;
+    setBackingMeta(null);
+    setListenSong(null);
+    setSource({ kind: "listen" });
+    setSongOpen(false);
+    setMoreOpen(false);
+    setSyncing(false);
+    // the lyric clock must run for captures to be scheduled; it is re-positioned on the first match
+    engine.play();
+  }, [graph, engine]);
+
+  const stopListen = useCallback(() => {
+    engine.pause();
+    setSource((src) => (src.kind === "listen" ? { kind: "none" } : src));
+    setListenSong(null);
+  }, [engine]);
+
+  const onListenResult = useCallback(
+    async (r: RecognizeOutcome, cap: Capture): Promise<boolean> => {
+      if (!r.ok || !r.match) return false;
+      const m = r.match;
+      const meta: VideoMeta = { title: m.title, channel: m.artist, duration: m.durationMs / 1000 };
+      const posNow = () => positionAtCaptureEnd(m, cap.sampleSeconds) + (performance.now() - cap.captureEnd) / 1000;
+      const current = trackRef.current;
+      const sameSong = !!current && current.source !== "demo" && trackMatchesVideo(current.title, current.artist, meta);
+      setListenSong({ title: m.title, artist: m.artist });
+      if (sameSong) {
+        const drift = posNow() - engine.frame.time;
+        if (Math.abs(drift) >= 1.5) engine.seek(posNow());
+        else if (Math.abs(drift) >= 0.12) engine.nudge(drift);
+        if (!engine.getSnapshot().playing) engine.play();
+        return true;
+      }
+      try {
+        const hits = await searchLyrics(`${m.title} ${m.artist}`.trim());
+        const best = pickLyricsForVideo(hits, meta);
+        if (best) {
+          const t = trackFromHit(best);
+          if (m.durationMs > 0) t.duration = Math.max(t.duration ?? 0, Math.ceil(m.durationMs / 1000));
+          setTrack(t);
+          engine.setDemoDuration(t.duration ?? m.durationMs / 1000);
+          engine.seek(posNow());
+          engine.play();
+          setNotice({ kind: "info", text: `Following: ${m.title} — ${m.artist}` });
+        } else {
+          setNotice({ kind: "error", text: `Recognised "${m.title}" by ${m.artist} — no timed lyrics on LRCLIB for it.` });
+        }
+      } catch {
+        setNotice({ kind: "error", text: `Recognised "${m.title}" — couldn't fetch its lyrics right now.` });
+      }
+      return true;
+    },
+    [engine],
+  );
+
+  const onListenFatal = useCallback(
+    (message: string, status: number) => {
+      if (status === 503) setListenSetup("missing");
+      setNotice({ kind: "error", text: message });
+      stopListen();
+    },
+    [stopListen],
+  );
+
+  const listen = useListener(graph, {
+    enabled: listening && mode === "perform",
+    playing: playback.playing,
+    resyncSeconds: RESYNC_S,
+    onResult: onListenResult,
+    onFatal: onListenFatal,
+  });
 
   const openSongLyrics = useCallback(() => {
     setSongFocusLyrics((n) => n + 1);
@@ -419,11 +512,12 @@ export default function App() {
       data-chrome={chromeHidden ? "hidden" : "visible"}
       data-fullscreen={String(fullscreen.active)}
       data-syncing={String(syncing && mode === "perform")}
+      data-generation={playback.generation}
       data-testid="app-root"
     >
       <div className="stage-bg" aria-hidden="true">
         <div className="stage-grain" />
-        {source.kind === "none" || (source.kind === "file" && source.mediaKind === "audio") ? (
+        {source.kind === "none" || source.kind === "listen" || (source.kind === "file" && source.mediaKind === "audio") ? (
           <MosaicBackdrop engine={engine} theme={theme} reducedMotion={reducedMotion} />
         ) : null}
         <div className="stage-vignette" />
@@ -461,6 +555,9 @@ export default function App() {
             <button type="button" className="sync-hint" onClick={startTapSync} data-testid="sync-hint">
               Different version of the song? <strong>Tap to sync →</strong>
             </button>
+          )}
+          {listening && mode === "perform" && (
+            <ListenPill status={listen.status} song={listenSong} nextAt={listen.nextAt} message={listen.message} onStop={stopListen} onNow={listen.checkNow} />
           )}
           {mic.status === "error" && mic.message && mode === "perform" && (
             <div className="notice notice--error" role="alert" data-testid="mic-status">
@@ -526,7 +623,7 @@ export default function App() {
 
       <Header
         title={shownTrack.title}
-        artist={media ? `${shownTrack.artist || "—"} · ${media.name}` : source.kind === "youtube" ? `${shownTrack.artist || "—"} · YouTube` : shownTrack.artist}
+        artist={media ? `${shownTrack.artist || "—"} · ${media.name}` : source.kind === "youtube" ? `${shownTrack.artist || "—"} · YouTube` : listening ? `${shownTrack.artist || "—"} · Live (listening)` : shownTrack.artist}
         section={activeSection}
         fullscreen={fullscreen.active}
         onToggleFullscreen={fullscreen.toggle}
@@ -546,6 +643,9 @@ export default function App() {
         backingDuration={backingDuration}
         backingMeta={backingMeta}
         focusLyrics={songFocusLyrics > 0}
+        onListen={startListen}
+        listening={listening}
+        listenUnavailable={listenSetup === "missing"}
       />
 
       <MoreSheet
