@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useModalFocus } from "../hooks/useModalFocus";
+import { useInstallPrompt } from "../hooks/useInstallPrompt";
 import type { PlaybackEngine, PlaybackSnapshot } from "../engine/PlaybackEngine";
 import { MAX_RATE, MIN_RATE } from "../engine/PlaybackEngine";
 import { DIFFICULTIES, type Difficulty } from "../engine/scoring";
@@ -56,6 +57,7 @@ export default function MoreSheet(p: Props) {
   }, [open, onClose]);
   const sheetRef = useRef<HTMLElement>(null);
   useModalFocus(open, sheetRef, "[data-testid=more-close]");
+  const install = useInstallPrompt();
 
   const stem = safeFileStem(p.track.title);
   if (!open) return null;
@@ -170,6 +172,23 @@ export default function MoreSheet(p: Props) {
             </button>
           </div>
         </div>
+
+        {install.kind !== "installed" && install.kind !== "unavailable" && (
+          <div className="sheet-section" data-testid="install-section">
+            <span className="sheet-label">Get the app</span>
+            {install.kind === "prompt" ? (
+              <div className="more-grid">
+                <button type="button" className="dock-btn dock-btn--accent" onClick={() => void install.install()} data-testid="install-app">
+                  ⤓ Install LyricGlow on this phone
+                </button>
+              </div>
+            ) : (
+              <p className="settings-hint" data-testid="install-ios-hint">
+                On iPhone: tap <strong>Share</strong> (the square with an arrow) → <strong>Add to Home Screen</strong>. LyricGlow then opens full-screen like an app, with the mic and Listen mode.
+              </p>
+            )}
+          </div>
+        )}
 
         <div className="sheet-section">
           <span className="sheet-label">Files &amp; tools</span>

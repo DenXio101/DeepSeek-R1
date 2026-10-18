@@ -3,6 +3,8 @@ import type { RecognizeResult } from "../model/acr";
 import { downsample, encodeWav16 } from "../model/wav";
 
 export const CAPTURE_S = 6;
+/** Native shells (Capacitor) load from an app origin, so the API lives on the web host. */
+export const API_BASE = ((import.meta.env.VITE_API_BASE as string | undefined) ?? "").replace(/\/$/, "");
 export const TARGET_RATE = 8000;
 
 export interface Capture {
@@ -103,7 +105,7 @@ export class Listener {
 /** POST the snippet to our server function; never throws */
 export async function recognize(wav: ArrayBuffer, signal?: AbortSignal): Promise<RecognizeOutcome> {
   try {
-    const res = await fetch("/api/recognize", { method: "POST", headers: { "content-type": "audio/wav" }, body: wav, signal });
+    const res = await fetch(`${API_BASE}/api/recognize`, { method: "POST", headers: { "content-type": "audio/wav" }, body: wav, signal });
     const data = (await res.json().catch(() => null)) as RecognizeResult | null;
     if (!data) return { ok: false, status: res.status, code: -8, error: `Recognition server error (${res.status}).` };
     return { ...data, status: res.status };
