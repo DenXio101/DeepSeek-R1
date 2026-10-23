@@ -880,3 +880,9 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .seg-btn { border: 0; background: transparent; color: var(--text-primary); padding: 8px 16px; min-height: 36px; border-radius: var(--radius-pill); cursor: pointer; font-size: 0.88rem; }
 .seg-btn[aria-pressed="true"] { background: linear-gradient(135deg, var(--gold-deep), var(--gold)); color: #0a0a0e; font-weight: 700; }
 [data-theme="light"] .seg-btn[aria-pressed="true"] { color: #fff; }
+/* background-clip:text lets a text-shadow bleed through the glyphs (they looked grey);
+   the active line uses a drop-shadow filter instead, which stays behind the fill */
+.karaoke-stage--karafun .lyric-line--active { text-shadow: none; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.7)) drop-shadow(0 0 10px rgba(0, 0, 0, 0.35)); }
+[data-theme="light"] .karaoke-stage--karafun .lyric-line--active { filter: drop-shadow(0 1px 2px rgba(255, 255, 255, 0.8)); }
+.karaoke-stage--karafun .lyric-word--active { text-shadow: none; filter: drop-shadow(0 0 8px var(--voice-glow, transparent)); }
+.karaoke-stage--karafun .lyric-line--active .lyric-word--finished { filter: none; }
