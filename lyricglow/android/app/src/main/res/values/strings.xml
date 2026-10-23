@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">LyricGlow</string>
+    <string name="title_activity_main">LyricGlow</string>
+    <string name="package_name">app.lyricglow</string>
+    <string name="custom_url_scheme">app.lyricglow</string>
+</resources>
