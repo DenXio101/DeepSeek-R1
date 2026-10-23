@@ -831,3 +831,52 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .listen-start svg { width: 1.2em; height: 1.2em; fill: currentColor; }
 .listen-start:hover { background: rgba(0, 212, 255, 0.3); }
 .listen-start[aria-pressed="true"] { background: rgba(0, 212, 255, 0.35); box-shadow: 0 0 14px var(--cyan-glow); }
+
+/* ── KaraFun-style lyrics ───────────────────────────────────────────────────
+   Three equal lines of bold rounded sans, white, wiped with the singer's colour;
+   sung words keep their colour; the finished line slides up and out. No ball. */
+:root { --font-karaoke: ui-rounded, "SF Pro Rounded", "Nunito", "Varela Round", "Segoe UI", Roboto, system-ui, sans-serif; }
+.karaoke-stage--karafun { --line-gap: 0.22em; --k-size: clamp(1.45rem, 5.2vw, 2.6rem); --k-text: #ffffff; }
+[data-theme="light"] .karaoke-stage--karafun { --k-text: #1a1410; }
+.karaoke-stage--karafun .lyric-lines-container { gap: var(--line-gap); font-size: var(--k-size); }
+.karaoke-stage--karafun .lyric-line {
+  font-family: var(--font-karaoke); font-weight: 800; letter-spacing: 0.01em; line-height: 1.15; gap: 0 0.3em;
+  font-size: 1em; color: var(--k-text);
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.6), 0 0 14px rgba(0, 0, 0, 0.45);
+  transition: transform 0.4s cubic-bezier(0.22, 0.8, 0.3, 1), opacity 0.4s ease;
+}
+[data-theme="light"] .karaoke-stage--karafun .lyric-line { text-shadow: 0 1px 2px rgba(255, 255, 255, 0.7), 0 0 10px rgba(255, 255, 255, 0.5); }
+.karaoke-stage--karafun .lyric-line--active { font-size: 1em; font-weight: 800; color: var(--k-text); }
+.karaoke-stage--karafun .lyric-line--next { opacity: 0.92; filter: none; transform: translateY(var(--flip-y)); }
+.karaoke-stage--karafun .lyric-line--next2, .karaoke-stage--karafun .lyric-line--next3 { opacity: 0.78; }
+.karaoke-stage--karafun .lyric-line--next3 { display: none; }
+@media (min-height: 700px) { .karaoke-stage--karafun .lyric-line--next3 { display: flex; } }
+.karaoke-stage--karafun .lyric-line--done {
+  position: absolute; left: 0; right: 0; top: calc(-1.15em - var(--line-gap));
+  opacity: 0; transform: translateY(calc(var(--flip-y) - 0.5em)); pointer-events: none;
+}
+/* wipe: sung = singer colour, unsung = white, 3 % feather; sung words and sung lines stay coloured */
+.karaoke-stage--karafun .lyric-line--active .lyric-syllable {
+  background-image: linear-gradient(to right, var(--voice-color, var(--gold)) calc(var(--reveal) * 103% - 3%), var(--k-text) calc(var(--reveal) * 103%));
+}
+.karaoke-stage--karafun .lyric-line--active .lyric-word--finished .lyric-syllable { background-image: linear-gradient(to right, var(--voice-color, var(--gold)), var(--voice-color, var(--gold))); }
+.karaoke-stage--karafun .lyric-line--active .lyric-word--finished { filter: none; text-shadow: inherit; }
+.karaoke-stage--karafun .lyric-line--done .lyric-syllable, .karaoke-stage--karafun .lyric-line--done .lyric-word { color: var(--voice-color, var(--gold)); }
+.karaoke-stage--karafun .lyric-word--active { text-shadow: 0 2px 4px rgba(0, 0, 0, 0.6), 0 0 18px var(--voice-glow, transparent); }
+.karaoke-stage--karafun .lyric-word-ghost { display: none; }
+.karaoke-stage--karafun .cue-ball { display: none; }
+.karaoke-stage--karafun.karaoke-stage--landscape { --k-size: clamp(1.4rem, 4.6vw, 2.4rem); }
+@media (min-width: 1100px) { .karaoke-stage--karafun { --k-size: clamp(2rem, 2.6vw, 3.2rem); } }
+@media (orientation: portrait) { .karaoke-stage--karafun .lyric-line--active { font-size: 1em; } }
+
+/* KaraFun count-in: dots only */
+.count-in--dots .count-in-dots { gap: 12px; }
+.count-in--dots .count-in-dot { width: 12px; height: 12px; background: var(--text-dim); box-shadow: none; }
+.count-in--dots .count-in-dot--on { background: var(--k-text, #fff); box-shadow: 0 0 10px rgba(255, 255, 255, 0.5); }
+
+/* segmented control (More → Display → Lyrics) */
+.seg { display: inline-flex; align-items: center; gap: 4px; padding: 4px; border-radius: var(--radius-pill); background: var(--control-bg); border: 1px solid var(--border); }
+.seg-label { font-size: 0.78rem; color: var(--text-muted); padding: 0 10px 0 8px; }
+.seg-btn { border: 0; background: transparent; color: var(--text-primary); padding: 8px 16px; min-height: 36px; border-radius: var(--radius-pill); cursor: pointer; font-size: 0.88rem; }
+.seg-btn[aria-pressed="true"] { background: linear-gradient(135deg, var(--gold-deep), var(--gold)); color: #0a0a0e; font-weight: 700; }
+[data-theme="light"] .seg-btn[aria-pressed="true"] { color: #fff; }

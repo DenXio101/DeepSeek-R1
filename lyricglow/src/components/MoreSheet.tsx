@@ -5,6 +5,7 @@ import type { PlaybackEngine, PlaybackSnapshot } from "../engine/PlaybackEngine"
 import { MAX_RATE, MIN_RATE } from "../engine/PlaybackEngine";
 import { DIFFICULTIES, type Difficulty } from "../engine/scoring";
 import type { EffectsLevel } from "../hooks/useReducedMotion";
+import type { LyricsStyle } from "../Karaoke";
 import type { Track } from "../lyrics";
 import { downloadTextFile, exportLrc, safeFileStem, trackToJson } from "../model/trackIO";
 import type { Theme } from "./Header";
@@ -39,6 +40,8 @@ interface Props {
   onToggleVisualizer: () => void;
   effects: EffectsLevel;
   onToggleEffects: () => void;
+  lyricsStyle: LyricsStyle;
+  onLyricsStyle: (s: LyricsStyle) => void;
   onMediaFile: (file: File) => void;
   onLyricsFile: (file: File) => void;
   onOpenStudio: () => void;
@@ -160,6 +163,15 @@ export default function MoreSheet(p: Props) {
 
         <div className="sheet-section">
           <span className="sheet-label">Display</span>
+          <div className="seg" role="group" aria-label="Lyrics style" data-testid="lyrics-style">
+            <span className="seg-label">Lyrics</span>
+            <button type="button" className="seg-btn" aria-pressed={p.lyricsStyle === "karafun"} onClick={() => p.onLyricsStyle("karafun")} data-testid="lyrics-style-karafun">
+              KaraFun
+            </button>
+            <button type="button" className="seg-btn" aria-pressed={p.lyricsStyle === "classic"} onClick={() => p.onLyricsStyle("classic")} data-testid="lyrics-style-classic">
+              Classic
+            </button>
+          </div>
           <div className="more-grid">
             <button type="button" className="dock-btn" onClick={p.onToggleTheme} aria-label={`Switch to ${p.theme === "dark" ? "light" : "dark"} theme`} data-testid="theme-toggle">
               {p.theme === "dark" ? "☀ Light theme" : "☾ Dark theme"}

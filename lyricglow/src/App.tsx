@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import Karaoke from "./Karaoke";
+import Karaoke, { type LyricsStyle } from "./Karaoke";
 import demoTrack from "./demoTrack";
 import type { Track } from "./lyrics";
 import { normalizeTrack } from "./model/normalize";
@@ -74,6 +74,7 @@ export default function App() {
   const [previewTrack, setPreviewTrack] = useState<Track | null>(null);
   const [visualizer, setVisualizer] = useState<boolean>(() => !isIOS());
   const [effects, setEffects] = useState<EffectsLevel>("auto");
+  const [lyricsStyle, setLyricsStyle] = useState<LyricsStyle>("karafun");
   const reducedMotion = useReducedMotion(effects);
   const [difficulty, setDifficulty] = useState<Difficulty>("normal");
   const [micLatencyMs, setMicLatencyMs] = useState(60);
@@ -592,7 +593,7 @@ export default function App() {
         </div>
 
         <div className="cue-slot" data-testid="cue-slot">
-          <CountIn countIn={session.countIn} />
+          <CountIn countIn={session.countIn} variant={lyricsStyle === "karafun" ? "dots" : "number"} />
           <SectionCard event={session.sectionEvent} />
         </div>
         {syncing && mode === "perform" && <SyncCard engine={engine} track={track} onApply={applyTapSync} onCancel={() => setSyncing(false)} />}
@@ -605,6 +606,7 @@ export default function App() {
           generation={session.generation}
           isLandscape={isLandscape}
           reducedMotion={reducedMotion}
+          style={lyricsStyle}
           onPeak={onPeak}
         />
         {micOn && (
@@ -678,6 +680,8 @@ export default function App() {
         onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
         visualizer={visualizer}
         onToggleVisualizer={toggleVisualizer}
+        lyricsStyle={lyricsStyle}
+        onLyricsStyle={setLyricsStyle}
         effects={effects}
         onToggleEffects={() => setEffects((e) => (e === "reduced" ? "auto" : "reduced"))}
         onMediaFile={handleFileUpload}

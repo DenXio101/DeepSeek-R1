@@ -5,7 +5,8 @@ import { clamp, easeInOutCubic, groupSyllablesIntoWords, wordText, type Line, ty
 import type { TrackTimeline } from "./model/timeline";
 import { beatPulse, conductorLead, createCueState, resetCue, stepCue, type Point } from "./components/CueBall";
 
-type Role = "prev2" | "prev" | "active" | "next";
+type Role = "prev2" | "prev" | "active" | "next" | "done" | "next2" | "next3";
+export type LyricsStyle = "karafun" | "classic";
 
 interface KaraokeProps {
   engine: PlaybackEngine;
@@ -15,6 +16,8 @@ interface KaraokeProps {
   generation: number;
   isLandscape: boolean;
   reducedMotion: boolean;
+  /** KaraFun: three equal white lines, sung words keep their colour, no ball / word fall. Classic: the original stage. */
+  style?: LyricsStyle;
   /** fired once when an emphasised word peaks (stage coords) */
   onPeak?: (p: Point, voice: Voice) => void;
 }
@@ -74,8 +77,10 @@ export default function Karaoke({
   generation,
   isLandscape,
   reducedMotion,
+  style = "karafun",
   onPeak,
 }: KaraokeProps) {
+  const karafun = style === "karafun";
   const containerRef = useRef<HTMLDivElement>(null);
   const cueRef = useRef<HTMLDivElement>(null);
   const onPeakRef = useRef(onPeak);
@@ -96,7 +101,20 @@ export default function Karaoke({
   const push = (i: number, role: Role) => {
     if (i >= 0 && i < lines.length) slots.push({ line: lines[i], role });
   };
-  if (activeIdx >= 0) {
+  if (karafun) {
+    // KaraFun window: the line just sung slides out, then active + the next two
+    if (activeIdx >= 0) {
+      push(activeIdx - 1, "done");
+      push(activeIdx, "active");
+      push(activeIdx + 1, "next");
+      push(activeIdx + 2, "next2");
+    } else {
+      push(base - 1, "done");
+      push(base, "next");
+      push(base + 1, "next2");
+      push(base + 2, "next3");
+    }
+  } else if (activeIdx >= 0) {
     push(activeIdx - 2, "prev2");
     push(activeIdx - 1, "prev");
     push(activeIdx, "active");
@@ -198,7 +216,7 @@ export default function Karaoke({
     for (const [id, el] of lineEls) scratch.lineTops.set(id, el.getBoundingClientRect().top - crect.top);
 
     engine.requestFrame();
-  }, [activeLine, generation, isLandscape, layoutTick, reducedMotion, engine]);
+  }, [activeLine, generation, isLandscape, layoutTick, reducedMotion, engine, karafun]);
 
   // ── per-frame drive ───────────────────────────────────────────────────────
   useFrame(engine, "render", (f) => {
@@ -254,7 +272,7 @@ export default function Karaoke({
       if (scratch.lastWordClass.get(wk) !== cls) {
         body.classList.toggle("lyric-word--active", active);
         body.classList.toggle("lyric-word--finished", finished);
-        body.classList.toggle("lyric-word--peak", peaking && !reducedMotion);
+        body.classList.toggle("lyric-word--peak", peaking && !reducedMotion && !karafun);
         scratch.lastWordClass.set(wk, cls);
       }
 
@@ -272,7 +290,8 @@ export default function Karaoke({
         scratch.peakFired.delete(wk);
       }
 
-      // word fall + ghost
+      // word fall + ghost (classic only — KaraFun keeps sung words in place and coloured)
+      if (karafun) return;
       if (finished) {
         const dp = clamp((t - last.end) / WORD_DROP_DUR, 0, 1);
         const e = easeInOutCubic(dp);
@@ -305,8 +324,8 @@ export default function Karaoke({
       }
     });
 
-    // ── cue ball ──
-    if (!cueEl) return;
+    // ── cue ball (classic only) ──
+    if (!cueEl || karafun) return;
     const lead = conductorLead(f.rate);
     const target = t + lead;
     let tk: string | null = null;
@@ -374,10 +393,11 @@ export default function Karaoke({
 
   return (
     <div
-      className={`karaoke-stage ${isLandscape ? "karaoke-stage--landscape" : ""}`}
+      className={`karaoke-stage karaoke-stage--${style} ${isLandscape ? "karaoke-stage--landscape" : ""}`}
       ref={containerRef}
       data-testid="karaoke-stage"
       data-active-line={activeLine?.id ?? ""}
+      data-style={style}
     >
       <div className="lyric-lines-container" aria-live="off">
         {slots.map(({ line, role }) => renderLine(line, role))}
