@@ -1,0 +1,11 @@
+# Stage 5 — Zoom-out (full file)
+1. **Major** L273–277,106,298–304 — SongFlow's `finished/grade/advancing` restate `session.finished`, `gradeReadyKey`, `gradeDismissed`. → One `introActive` flag next to the queue; Next/Sing again/End set stay plain handlers; drop the reducer, table fixtures and "illegal events logged".
+2. **Major** L99–103,338–342 — `keyOffset` threaded into four consumers. → Apply once in `buildTimeline(track, keyOffset)` (or map `note += key` on flat syllables); scoring/lane/synths unchanged; drops `data-note`/`data-guide-hz` hooks.
+3. **Major** L34,119 vs 288; 18,137,183,298 — flag-off ≠ "exactly today" once Phase 2 deletes the URL effect; three flags + query override = 2^3 paths. → Either an unflagged Phase 2 where flags only hide new UI, or a single `KEY` flag; remove `?feature=`.
+4. **Major** L179,332,133,278–279,191 — Diagnostics module/UI not a goal; EMA auto-bypass speculative. → Cut Diagnostics.ts and the download; `console.warn` + notice; let Q1 decide on auto-bypass.
+5. **Major** L31,50,93,203,209 — one constant can't hold 30 ms across rates/keys; wall vs song seconds. → Phase 5 spike first: latency at keys −6/−2/+6, rates 0.5/2; prove `preservesPitch=false` + mirror doesn't double-apply tempo; fallback goal (60 ms or Tap to sync).
+6. **Major** L108,282,294,304 — play gate in the engine = three owners of "should we play". → Keep it out of the engine: intro is a pre-roll state; the card calls `engine.play()` after the countdown; Pause/Seek/Restart dismiss the card.
+7. **Major** L22–24,122,288–289 — refactoring every handler into `setCurrentSong` for ≤ 8 songs; 719-line gate not credible; SongQueue carries speculative surface. → Minimal SongQueue (entries, current index, one URL); non-queue flows keep `setSource/setTrack`; "no new state in App" gate; set UI state in `useSongQueue`.
+8. **Nit** L83–89 — analyser is a side branch in code. → Redraw; "insert shifter between chain.output and destination; re-point the analyser"; drop the stage record.
+9. **Nit** L31,102,128,131 — demo-accepts-key inconsistency; hotkeys, KeyBadge, key-reset are extras. → Remove demo key; drop hotkeys unless asked; badge as one text line.
+10. **Nit** L6,145–173,238–241,344 — brief D# citations; code-level detail in the plan; Phase 4 asserts key −2.
