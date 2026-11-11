@@ -24,6 +24,15 @@ export interface CountIn {
   beats: number[];
 }
 
+/**
+ * The one place lyric time is derived from the engine frame: the engine's song time,
+ * minus the output delay the frame carries (song seconds; non-zero only while the
+ * pitch shifter is in the audio graph), plus the user's lyric-timing offset.
+ */
+export function lyricTime(frame: { time: number; lead: number }, track: { offset?: number }): number {
+  return frame.time - frame.lead + (track.offset ?? 0);
+}
+
 export interface TrackTimeline {
   track: Track;
   flat: FlatSyllable[];
@@ -38,6 +47,12 @@ export interface TrackTimeline {
   beatOffset: number;
   findActiveLine(time: number): number;
   findLineAt(time: number): number;
+  /** semitones the backing track is transposed by (key change); 0 = as written */
+  readonly keyOffset: number;
+  /** set the transposition without rebuilding anything that holds this timeline */
+  setKeyOffset(semitones: number): void;
+  /** the note to sing / play / score for a syllable in the current key; undefined when it has none */
+  noteOf(syl: Pick<Syllable, "note">): number | undefined;
 }
 
 export function basePoints(syl: Syllable): number {
@@ -120,7 +135,7 @@ export function buildTimeline(track: Track): TrackTimeline {
     return t <= lineEnds[i] ? i : -1;
   };
 
-  return {
+  const tl: TrackTimeline = {
     track,
     flat,
     lineStarts,
@@ -133,5 +148,13 @@ export function buildTimeline(track: Track): TrackTimeline {
     beatOffset,
     findActiveLine,
     findLineAt,
+    keyOffset: 0,
+    setKeyOffset(semitones: number) {
+      (tl as { keyOffset: number }).keyOffset = Math.round(semitones) || 0;
+    },
+    noteOf(syl) {
+      return syl.note === undefined ? undefined : syl.note + tl.keyOffset;
+    },
   };
+  return tl;
 }

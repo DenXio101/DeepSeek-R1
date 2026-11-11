@@ -424,6 +424,16 @@ a.dock-btn { text-decoration: none; }
 /* ── More sheet ──────────────────────────────────────────────────────────── */
 .sheet--more { gap: 16px; }
 .more-row { display: flex; align-items: center; gap: 10px; }
+/* Key row: − value + 0 and a status line; chips are 44 px targets */
+.key-row { flex-wrap: wrap; row-gap: 4px; }
+.key-row .sync-chip { min-width: 44px; min-height: 44px; font-size: 1.1rem; }
+.key-value { min-width: 2.6em; text-align: center; font-variant-numeric: tabular-nums; font-weight: 700; font-size: 1.05rem; }
+.key-status { flex-basis: 100%; font-size: 0.72rem; color: var(--text-muted); padding-left: 50px; }
+.key-pill {
+  align-self: center; padding: 3px 10px; border-radius: var(--radius-pill);
+  background: rgba(232, 200, 122, 0.16); border: 1px solid rgba(232, 200, 122, 0.5); color: var(--gold);
+  font-size: 0.76rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+}
 .more-row .tempo-slider { flex: 1; }
 .more-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
 .more-grid .dock-btn { justify-content: flex-start; padding: 9px 12px; font-size: 0.88rem; }

@@ -5,7 +5,7 @@
 // AudioGraph's analyser so the stage lights react to it.
 
 import type { Voice } from "../lyrics";
-import type { FlatSyllable, TrackTimeline } from "../model/timeline";
+import { lyricTime, type FlatSyllable, type TrackTimeline } from "../model/timeline";
 import type { AudioGraph } from "./AudioGraph";
 import { midiToHz } from "./pitch";
 import type { Frame, PlaybackEngine } from "./PlaybackEngine";
@@ -128,7 +128,7 @@ export class DemoSynth {
     }
     const ctx = this.ensureNodes();
     if (!ctx || ctx.state !== "running" || !this.master) return;
-    const t = f.time + (this.timeline.track.offset ?? 0);
+    const t = lyricTime(f, this.timeline.track);
     if (!this.wasPlaying || !this.cursorValid) this.resetCursors(t);
     this.wasPlaying = true;
 
@@ -164,7 +164,7 @@ export class DemoSynth {
 
   private playNote(ctx: AudioContext, s: FlatSyllable, when: number, dur: number): void {
     const master = this.master!;
-    const hz = midiToHz(s.note!);
+    const hz = midiToHz(this.timeline.noteOf(s) ?? s.note!);
     const gain = ctx.createGain();
     const filter = ctx.createBiquadFilter();
     filter.type = "lowpass";

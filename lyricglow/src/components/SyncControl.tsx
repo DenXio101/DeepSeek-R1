@@ -43,17 +43,19 @@ interface CardProps {
 }
 
 export function SyncCard({ engine, track, onApply, onCancel }: CardProps) {
-  const [target, setTarget] = useState<Line | null>(() => upcomingLine(track, engine.frame.time));
+  // audible position = engine time minus the output lead (non-zero only with the pitch shifter)
+  const heard = () => engine.frame.time - engine.frame.lead;
+  const [target, setTarget] = useState<Line | null>(() => upcomingLine(track, heard()));
 
   useFrame(engine, "render", (f) => {
-    const next = upcomingLine(track, f.time);
+    const next = upcomingLine(track, f.time - f.lead);
     setTarget((prev) => (prev?.id === next?.id ? prev : next));
   });
 
   const tap = () => {
-    const line = target ?? upcomingLine(track, engine.frame.time);
+    const line = target ?? upcomingLine(track, heard());
     if (!line) return;
-    onApply(offsetForTap(line, engine.frame.time), line);
+    onApply(offsetForTap(line, heard()), line);
   };
 
   return (

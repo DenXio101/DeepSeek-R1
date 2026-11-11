@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import type { PlaybackEngine } from "./engine/PlaybackEngine";
 import { useFrame } from "./engine/useFrame";
 import { clamp, easeInOutCubic, groupSyllablesIntoWords, wordText, type Line, type Voice } from "./lyrics";
-import type { TrackTimeline } from "./model/timeline";
+import { lyricTime, type TrackTimeline } from "./model/timeline";
 import { beatPulse, conductorLead, createCueState, resetCue, stepCue, type Point } from "./components/CueBall";
 
 type Role = "prev2" | "prev" | "active" | "next" | "done" | "next2" | "next3";
@@ -222,7 +222,7 @@ export default function Karaoke({
   useFrame(engine, "render", (f) => {
     const scratch = (scratchRef.current ??= makeScratch());
     const { sylEls, wordEls, ghostEls } = scratch;
-    const t = f.time + (timeline.track.offset ?? 0);
+    const t = lyricTime(f, timeline.track);
     const cueEl = cueRef.current;
 
     if (f.generation !== scratch.lastGeneration) {

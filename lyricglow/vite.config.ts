@@ -1,11 +1,24 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+
+/** The SoundTouch processor must be emitted under /assets/ (the SPA rewrite in vercel.json excludes that path). */
+function assertWorkletAsset(): Plugin {
+  return {
+    name: 'lyricglow:worklet-asset',
+    generateBundle(_, bundle) {
+      if (!Object.keys(bundle).some((k) => /^assets\/soundtouch-processor[-.][^/]*\.js$/.test(k))) {
+        this.error('soundtouch-processor.js was not emitted under assets/ — the key change would 404 in production')
+      }
+    },
+  }
+}
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
     react(),
+    assertWorkletAsset(),
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'icons/apple-touch-icon.png'],

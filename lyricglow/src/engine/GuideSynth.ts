@@ -6,7 +6,7 @@
 // and kept out of the stage analyser so the lights keep following the music.
 
 import type { Voice } from "../lyrics";
-import type { FlatSyllable, TrackTimeline } from "../model/timeline";
+import { lyricTime, type FlatSyllable, type TrackTimeline } from "../model/timeline";
 import type { AudioGraph } from "./AudioGraph";
 import { midiToHz } from "./pitch";
 import type { Frame, PlaybackEngine } from "./PlaybackEngine";
@@ -131,7 +131,7 @@ export class GuideSynth {
     }
     const ctx = this.ensureNodes();
     if (!ctx || ctx.state !== "running" || !this.master) return;
-    const t = f.time + (this.timeline.track.offset ?? 0);
+    const t = lyricTime(f, this.timeline.track);
     if (!this.wasPlaying || !this.cursorValid) this.resetCursor(t);
     this.wasPlaying = true;
 
@@ -163,7 +163,8 @@ export class GuideSynth {
   /** breathy hum: sine + quiet octave, low-passed, swelling into the first word */
   private playHum(ctx: AudioContext, s: FlatSyllable, when: number, dur: number): void {
     const master = this.master!;
-    const hz = s.note !== undefined ? midiToHz(s.note) : DEFAULT_HZ[s.voice];
+    const note = this.timeline.noteOf(s);
+    const hz = note !== undefined ? midiToHz(note) : DEFAULT_HZ[s.voice];
     const gain = ctx.createGain();
     const filter = ctx.createBiquadFilter();
     filter.type = "lowpass";

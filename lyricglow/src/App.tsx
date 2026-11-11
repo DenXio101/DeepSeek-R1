@@ -9,7 +9,11 @@ import { useKaraokeSession } from "./engine/useKaraokeSession";
 import { useIsLandscape } from "./hooks/useOrientation";
 import Header, { type Theme } from "./components/Header";
 import ThumbBar, { type VocalsState } from "./components/ThumbBar";
-import MoreSheet from "./components/MoreSheet";
+import MoreSheet, { type KeyControl } from "./components/MoreSheet";
+import KeyPill from "./components/KeyPill";
+import { KEY_ENABLED } from "./featureFlags";
+import { KEY_MAX, KEY_MIN, SHIFTER_LATENCY_S } from "./engine/SoundTouchShifter";
+import type { KeyState } from "./engine/AudioGraph";
 import { SyncCard } from "./components/SyncControl";
 import { formatOffset } from "./model/sync";
 import MediaElement, { type MediaKind } from "./components/MediaElement";
@@ -133,6 +137,59 @@ export default function App() {
   const vocalsApply = !!media && playback.sourceKind === "media" && graph.supported;
   const vocals: VocalsState = { on: vocalLevel > 0, disabledReason: !vocalsApply ? "Local files only" : vocalMono ? MONO_NOTE : null };
 
+  // ── key change: session state beside the vocal level; the shifter is in the graph only at key ≠ 0 ──
+  const [keyOffset, setKeyOffset] = useState(0);
+  const [keyState, setKeyState] = useState<KeyState>({ status: "idle", reason: null, active: false });
+  const listening = source.kind === "listen";
+  const isDemoSource = playback.sourceKind === "demo";
+  const keyOnDemo = isDemoSource && !listening && source.kind === "none";
+  useEffect(() => {
+    if (!KEY_ENABLED || !vocalsApply) return;
+    const el = engine.mediaElement;
+    if (!el) return;
+    let cancelled = false;
+    void graph.setKey(el, keyOffset).then((st) => {
+      if (!cancelled) setKeyState(st);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [engine, graph, vocalsApply, keyOffset]);
+  // the last resolved state only counts while a local file is the source (a new file resolves anew)
+  const keyActive = vocalsApply && keyState.active;
+  const keyUnavailable = vocalsApply && keyState.status === "unavailable";
+  useEffect(() => {
+    if (!KEY_ENABLED) return;
+    const el = engine.mediaElement;
+    if (el) graph.mirrorRate(el, playback.rate);
+  }, [engine, graph, playback.rate, keyActive]);
+  useEffect(() => {
+    engine.setOutputLatency(keyActive ? SHIFTER_LATENCY_S : 0);
+  }, [engine, keyActive]);
+  /** the only transposition value handed to lyrics consumers: 0 unless the audio really is shifted (or the demo synth plays) */
+  const effectiveKey = !KEY_ENABLED ? 0 : keyOnDemo ? keyOffset : keyActive ? keyOffset : 0;
+  useEffect(() => {
+    timeline.setKeyOffset(effectiveKey);
+    engine.requestFrame();
+  }, [timeline, effectiveKey, engine]);
+  const keyControl: KeyControl | null = KEY_ENABLED
+    ? {
+        value: keyOffset,
+        enabled: keyOnDemo || (vocalsApply && !keyUnavailable),
+        statusText: !keyOnDemo && !vocalsApply
+          ? "Local files and the demo only"
+          : keyUnavailable
+            ? `not available — ${keyState.reason ?? "no pitch shifter"}`
+            : keyOffset === 0
+              ? "off"
+              : keyOnDemo
+                ? "on (demo melody)"
+                : keyActive
+                  ? "on"
+                  : "loading…",
+      }
+    : null;
+
   // mic → pitch tracker → session scoring
   useEffect(() => {
     if (!micOn) return;
@@ -210,7 +267,6 @@ export default function App() {
   // the guide cue: a very quiet hum before each line + tick per word over real backing tracks
   const guideRef = useRef<GuideSynth | null>(null);
   const guideLevelRef = useRef(guideLevel);
-  const listening = source.kind === "listen";
   const guideActive = (playback.sourceKind !== "demo" || listening) && mode === "perform";
   useEffect(() => {
     if (!guideActive) return;
@@ -228,7 +284,6 @@ export default function App() {
   }, [guideLevel]);
 
   // the demo sings: synthesized melody + beat while no backing track is loaded
-  const isDemoSource = playback.sourceKind === "demo";
   useEffect(() => {
     if (!isDemoSource || !demoSound || mode === "studio" || listening) return;
     const synth = new DemoSynth(graph, timeline);
@@ -589,6 +644,7 @@ export default function App() {
               Different version of the song? <strong>Tap to sync →</strong>
             </button>
           )}
+          {effectiveKey !== 0 && mode === "perform" && <KeyPill semitones={effectiveKey} />}
           {listening && mode === "perform" && (
             <ListenPill status={listen.status} song={listenSong} nextAt={listen.nextAt} message={listen.message} onStop={stopListen} onNow={listen.checkNow} />
           )}
@@ -683,7 +739,9 @@ export default function App() {
         track={track}
         onNudge={nudgeLyrics}
         onStartTapSync={startTapSync}
-        showVocal={!!media && playback.sourceKind === "media" && graph.supported}
+        keyControl={keyControl}
+        onKey={(n) => setKeyOffset(Math.max(KEY_MIN, Math.min(KEY_MAX, Math.round(n))))}
+        showVocal={vocalsApply}
         vocalLevel={vocalLevel}
         vocalMono={vocalMono}
         onVocalLevel={setVocalLevelFromSlider}

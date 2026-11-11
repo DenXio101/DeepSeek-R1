@@ -3,7 +3,7 @@ import type { AudioGraph } from "../engine/AudioGraph";
 import { Envelope, syntheticBass, syntheticEnergy } from "../engine/beat";
 import type { PlaybackEngine } from "../engine/PlaybackEngine";
 import { useFrame } from "../engine/useFrame";
-import type { TrackTimeline } from "../model/timeline";
+import { lyricTime, type TrackTimeline } from "../model/timeline";
 
 interface Props {
   engine: PlaybackEngine;
@@ -50,7 +50,7 @@ export default function SpectrumCanvas({ engine, graph, timeline, visible, reduc
   useFrame(engine, "render", (f) => {
     const env = envRef.current;
     const bands = bandsRef.current;
-    const t = f.time + (timeline.track.offset ?? 0);
+    const t = lyricTime(f, timeline.track);
     let bass: number;
     let energy: number;
     const spectrum = graph.mediaAnalyserActive ? graph.readSpectrum() : null;

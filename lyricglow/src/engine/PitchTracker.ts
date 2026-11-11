@@ -53,7 +53,8 @@ export class PitchTracker {
     if (f.now - this.lastRun < INTERVAL_MS) return;
     this.lastRun = f.now;
     const buf = this.graph.readMicTimeDomain();
-    const t = f.time + this.offset;
+    // same clock as the lyrics: the frame's output lead is subtracted, then the lyric-timing offset added
+    const t = f.time - f.lead + this.offset;
     if (!buf) return;
     const r = detectPitchMPM(buf, this.graph.sampleRate);
     const accepted = r && r.clarity >= CLARITY_ACCEPT ? hzToMidi(r.hz) : null;

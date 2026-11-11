@@ -76,6 +76,40 @@ None. Every finding was accepted as written or resolved as the stage 8 reviewer 
 | Q2 iOS autoplay on advance | Owner has an iPhone; checked after Phase 4; "Tap to start" fallback exists regardless. |
 | Q3 shifter latency | Measured by the Phase 2a spike at 0.5×, 1×, 2×; 30 ms tolerance accepted by the owner pending the number. |
 
-## Spike result (Phase 2a)
+## Spike result (Phase 2a) — GO
 
-_To be filled in during the build._
+`node scripts/spike/key-spike.mjs`, 2026-11-11, headless Chromium 1243 (Playwright 1.63), 44.1 kHz, `@soundtouchjs/audio-worklet` 2.1.1. Firefox and the phones were not available in the sandbox; the owner's Android run (Q1) is still pending and gates the flag.
+
+**Pitch error** (A4 fixture; `preservesPitch = false`, element rate mirrored into the node):
+
+| path | 0.5× −2 | 0.5× +2 | 1× −2 | 1× +2 | 2× −2 | 2× +2 |
+|---|---|---|---|---|---|---|
+| offline buffer source | 0.0 ¢ | −0.1 ¢ | 0.0 ¢ | 0.2 ¢ | −0.4 ¢ | −0.5 ¢ |
+| live `<audio>` → MediaElementSource | −0.4 ¢ | −0.3 ¢ | 0.2 ¢ | 0.2 ¢ | −0.1 ¢ | −0.1 ¢ |
+
+Limit was 15 cents; worst cell 0.5 cents.
+
+**Shifter delay** (envelope cross-correlation of 20 ms tone bursts, wall ms; cells with a spread > 20 ms over the three bursts are detection failures of the method, not of the shifter):
+
+| rate | key −2 | key 0 (node in, no shift) | key +2 |
+|---|---|---|---|
+| 0.5× | 119.6 (spread 4) | 102.8 (12) | 105.9 (11) |
+| 0.75× | 122.1 (10) | 119.9 (9) | 115.1 (16) |
+| 1× | 126.2 (0) | 133.0 (0) | 126.1 (6) |
+| 1.5× | 128.4 (19) | — | 125.8 (15) |
+| 2× | — | 111.1 (13) | — |
+
+Decision: one constant `SHIFTER_LATENCY_S = 0.128` (wall seconds, scaled by rate into `frame.lead`). Every reliable cell lies within ±26 ms of it, inside the owner's 30 ms tolerance, so the per-rate table in the design is not needed. Re-measure if the package version changes.
+
+**Dropouts and start-up**: 10 s soak at key −2: no silent frames after the first second (the apparent 600–800 ms silence in the first runs was the analyser's 32768-sample buffer filling, not audio). First sound after `play()`: 88 ms dry, 139 ms through the shifter.
+
+**Sizes**: node module 5.8 KB, processor 72.9 KB raw / 16.9 KB gzipped, emitted as `assets/soundtouch-processor-*.js` and precached.
+
+## Build log
+
+| Phase | Commit | Gate |
+|---|---|---|
+| Step 0 flows in repo | `78cffd8` | 6 flows green, BASELINE.md recorded |
+| Phase 1 Vocals switch + Restart in the seek row | `4ab3e9c` | tsc, eslint, build, check:model, 7 flows green; baseline numbers unchanged |
+| Phase 2a spike | `8cd0a35` | GO (table above) |
+| Phase 2b Key change | see git log | tsc, eslint, build (processor under assets asserted), check:model (+11 fixtures), 8 flows green incl. `verify-key` |

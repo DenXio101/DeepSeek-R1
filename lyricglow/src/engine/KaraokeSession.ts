@@ -5,7 +5,7 @@
 // a later phase through the same snapshot).
 
 import type { Section } from "../lyrics";
-import type { TrackTimeline } from "../model/timeline";
+import { lyricTime, type TrackTimeline } from "../model/timeline";
 import type { Frame, PlaybackEngine } from "./PlaybackEngine";
 import type { PitchSample, PitchTracker } from "./PitchTracker";
 import {
@@ -189,7 +189,8 @@ export class KaraokeSession {
         if (ts > syl.end + 0.05) break;
         samples.push({ t: ts, midi: s.midi, confidence: s.confidence, rms: s.rms });
       }
-      const r = scoreSyllable(syl, prevEnd, samples, this.scoring.difficulty);
+      // score against the note in the current key (transposed with the backing track)
+      const r = scoreSyllable({ ...syl, note: this.timeline.noteOf(syl) }, prevEnd, samples, this.scoring.difficulty);
       applyResult(this.scoreState, syl, r);
       const next = flat[this.nextIdx + 1];
       if (!next || next.lineIdx !== syl.lineIdx) {
@@ -219,7 +220,7 @@ export class KaraokeSession {
 
   private onFrame = (f: Readonly<Frame>): void => {
     const tl = this.timeline;
-    const t = f.time + (tl.track.offset ?? 0);
+    const t = lyricTime(f, tl.track);
     this.songTime = t;
     const prev = this.snapshot;
 

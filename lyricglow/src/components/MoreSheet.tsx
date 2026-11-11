@@ -3,6 +3,7 @@ import { useModalFocus } from "../hooks/useModalFocus";
 import { useInstallPrompt } from "../hooks/useInstallPrompt";
 import type { PlaybackEngine, PlaybackSnapshot } from "../engine/PlaybackEngine";
 import { MAX_RATE, MIN_RATE } from "../engine/PlaybackEngine";
+import { KEY_MAX, KEY_MIN, formatKey } from "../engine/SoundTouchShifter";
 import { DIFFICULTIES, type Difficulty } from "../engine/scoring";
 import type { EffectsLevel } from "../hooks/useReducedMotion";
 import type { LyricsStyle } from "../Karaoke";
@@ -13,6 +14,15 @@ import { IconDownload, IconImport, IconSparkle, IconStudio, IconUpload } from ".
 import { SyncControl } from "./SyncControl";
 import VocalControl from "./VocalControl";
 
+export interface KeyControl {
+  /** semitones, −6…+6 */
+  value: number;
+  /** false for YouTube / Listen or when the shifter is unavailable: stepper disabled */
+  enabled: boolean;
+  /** one line under the stepper: "off", "on", "loading…", "not available — …", "Local files and the demo only" */
+  statusText: string;
+}
+
 interface Props {
   open: boolean;
   onClose: () => void;
@@ -21,6 +31,9 @@ interface Props {
   track: Track;
   onNudge: (delta: number) => void;
   onStartTapSync: () => void;
+  /** key change row (null when the build has the feature off) */
+  keyControl: KeyControl | null;
+  onKey: (semitones: number) => void;
   /** a local file is loaded and routed through Web Audio */
   showVocal: boolean;
   vocalLevel: number;
@@ -82,7 +95,41 @@ export default function MoreSheet(p: Props) {
         </div>
 
         <div className="sheet-section">
-          <span className="sheet-label">Speed</span>
+          <span className="sheet-label">{p.keyControl ? "Key & speed" : "Speed"}</span>
+          {p.keyControl && (
+            <div className="more-row key-row" data-testid="key-row">
+              <span className="tempo-label">Key</span>
+              <button
+                type="button"
+                className="sync-chip"
+                onClick={() => p.onKey(p.keyControl!.value - 1)}
+                disabled={!p.keyControl.enabled || p.keyControl.value <= KEY_MIN}
+                aria-label="Key down one semitone"
+                data-testid="key-minus"
+              >
+                −
+              </button>
+              <span className="key-value" aria-live="polite" aria-label={`Key ${p.keyControl.value === 0 ? "unchanged" : `${p.keyControl.value > 0 ? "plus" : "minus"} ${Math.abs(p.keyControl.value)} semitones`}`} data-testid="key-value">
+                {formatKey(p.keyControl.value)}
+              </span>
+              <button
+                type="button"
+                className="sync-chip"
+                onClick={() => p.onKey(p.keyControl!.value + 1)}
+                disabled={!p.keyControl.enabled || p.keyControl.value >= KEY_MAX}
+                aria-label="Key up one semitone"
+                data-testid="key-plus"
+              >
+                +
+              </button>
+              <button type="button" className="sync-chip" onClick={() => p.onKey(0)} disabled={p.keyControl.value === 0} aria-label="Original key" data-testid="key-zero">
+                0
+              </button>
+              <span className="key-status" data-testid="key-status">
+                {p.keyControl.statusText}
+              </span>
+            </div>
+          )}
           <div className="more-row">
             <label htmlFor="tempo-slider" className="tempo-label" data-testid="tempo-value">
               {rate.toFixed(2)}×

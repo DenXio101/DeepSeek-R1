@@ -3,6 +3,8 @@
 // element, ever) and the microphone path. Nothing from the mic reaches the
 // speakers. Safe under StrictMode double-mounts.
 
+import { SHIFTER_LATENCY_S, SoundTouchShifter, type ShifterStatus } from "./SoundTouchShifter";
+
 export type MicStatus = "off" | "requesting" | "on" | "error";
 export interface MicState {
   status: MicStatus;
@@ -130,6 +132,26 @@ export function createVocalChain(ctx: AudioContext): VocalChain {
 }
 
 const vocalChains = new WeakMap<HTMLMediaElement, VocalChain>();
+/** pitch shifter per element (created on the first non-zero key) and whether it is wired in */
+const shifters = new WeakMap<HTMLMediaElement, SoundTouchShifter>();
+const shifterInserted = new WeakSet<HTMLMediaElement>();
+
+export interface KeyState {
+  status: ShifterStatus;
+  reason: string | null;
+  /** the shifter is in the graph right now (key ≠ 0 and loaded) */
+  active: boolean;
+}
+
+/** dip the chain output around a graph change so re-patching does not click */
+const PATCH_DIP_S = 0.03;
+
+/** the browser corrects pitch for rate changes by default; the shifter wants the raw signal */
+function setPreservesPitch(el: HTMLMediaElement, on: boolean): void {
+  const any = el as HTMLMediaElement & { webkitPreservesPitch?: boolean };
+  if ("preservesPitch" in el) el.preservesPitch = on;
+  if ("webkitPreservesPitch" in any) any.webkitPreservesPitch = on;
+}
 
 export const MIC_FFT = 2048;
 const MEDIA_FFT = 1024;
@@ -187,13 +209,119 @@ export class AudioGraph {
     if (this.attachedEl === el && this.mediaAnalyser) return true;
     try {
       this.sourceFor(ctx, el);
-      // tap after the vocal chain so the stage lights follow what is actually heard
-      const tap = vocalChains.get(el)?.output;
-      this.useSource(tap ?? this.sourceFor(ctx, el), el);
+      // tap after the vocal chain (and the pitch shifter when it is in) so the stage lights follow what is heard
+      this.useSource(this.audibleOutput(el) ?? this.sourceFor(ctx, el), el);
       return true;
     } catch {
       return false;
     }
+  }
+
+  /** the last node before the destination for this element: shifter when inserted, else the vocal chain output */
+  private audibleOutput(el: HTMLMediaElement): AudioNode | null {
+    if (shifterInserted.has(el)) return shifters.get(el)?.node ?? null;
+    return vocalChains.get(el)?.output ?? null;
+  }
+
+  // ── key change (pitch shifter) ───────────────────────────────────────
+  /**
+   * Transpose the element's audio by `semitones`. Key 0 removes the shifter from the
+   * graph (true bypass); any other key loads it on first use and wires
+   * chain → shifter → destination, re-pointing the stage analyser behind it.
+   * Resolves with the resulting state; never throws.
+   */
+  async setKey(el: HTMLMediaElement, semitones: number): Promise<KeyState> {
+    const ctx = this.ensureContext();
+    if (!ctx) return { status: "unavailable", reason: "Web Audio isn't available", active: false };
+    const n = Math.round(semitones) || 0;
+    let chain: VocalChain | undefined;
+    try {
+      this.sourceFor(ctx, el);
+      chain = vocalChains.get(el);
+    } catch {
+      return { status: "unavailable", reason: "this element can't be routed through Web Audio", active: false };
+    }
+    if (!chain) return { status: "unavailable", reason: "no audio chain", active: false };
+
+    if (n === 0) {
+      this.removeShifter(ctx, el, chain);
+      const sh = shifters.get(el);
+      return { status: sh?.status === "unavailable" ? "unavailable" : "idle", reason: sh?.reason ?? null, active: false };
+    }
+
+    let sh = shifters.get(el);
+    if (!sh) {
+      sh = new SoundTouchShifter(ctx);
+      shifters.set(el, sh);
+    }
+    sh.setSemitones(n);
+    sh.setRate(el.playbackRate);
+    const ok = await sh.load();
+    if (!ok || !sh.node) return { status: "unavailable", reason: sh.reason, active: false };
+    if (!shifterInserted.has(el)) {
+      const node = sh.node;
+      this.patch(ctx, chain, () => {
+        chain.output.disconnect(ctx.destination);
+        chain.output.connect(node);
+        node.connect(ctx.destination);
+        if (this.attachedEl === el && this.mediaAnalyser) {
+          chain.output.disconnect(this.mediaAnalyser);
+          node.connect(this.mediaAnalyser);
+        }
+        shifterInserted.add(el);
+        setPreservesPitch(el, false);
+      });
+    }
+    return { status: "on", reason: null, active: true };
+  }
+
+  private removeShifter(ctx: AudioContext, el: HTMLMediaElement, chain: VocalChain): void {
+    if (!shifterInserted.has(el)) return;
+    const node = shifters.get(el)?.node;
+    this.patch(ctx, chain, () => {
+      try {
+        node?.disconnect();
+      } catch {
+        /* already gone */
+      }
+      chain.output.connect(ctx.destination);
+      if (this.attachedEl === el && this.mediaAnalyser) chain.output.connect(this.mediaAnalyser);
+      shifterInserted.delete(el);
+      setPreservesPitch(el, true);
+    });
+  }
+
+  /** gain dip around a re-patch (PATCH_DIP_S down, re-patch, PATCH_DIP_S up) */
+  private patch(ctx: AudioContext, chain: VocalChain, rewire: () => void): void {
+    const g = chain.output.gain;
+    const t = ctx.currentTime;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(g.value, t);
+    g.linearRampToValueAtTime(0, t + PATCH_DIP_S);
+    g.setValueAtTime(0, t + PATCH_DIP_S);
+    g.linearRampToValueAtTime(1, t + PATCH_DIP_S * 2);
+    window.setTimeout(() => {
+      try {
+        rewire();
+      } catch {
+        /* a disconnect on a node that is not connected throws; the graph is still consistent */
+      }
+    }, PATCH_DIP_S * 1000);
+  }
+
+  /** keep the shifter's rate mirror in step with the element's playbackRate */
+  mirrorRate(el: HTMLMediaElement, rate: number): void {
+    shifters.get(el)?.setRate(rate);
+  }
+
+  keyState(el: HTMLMediaElement): KeyState {
+    const sh = shifters.get(el);
+    return { status: sh?.status ?? "idle", reason: sh?.reason ?? null, active: shifterInserted.has(el) };
+  }
+
+  /** wall-second delay the output path adds right now (the shifter's, when it is in) */
+  outputLatency(el: HTMLMediaElement): number {
+    return shifterInserted.has(el) ? SHIFTER_LATENCY_S : 0;
   }
 
   /** element → (vocal chain) → destination; built once per element, always audible */

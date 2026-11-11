@@ -3,7 +3,7 @@ import type { KaraokeSession } from "../engine/KaraokeSession";
 import type { PitchTracker } from "../engine/PitchTracker";
 import type { PlaybackEngine } from "../engine/PlaybackEngine";
 import { useFrame } from "../engine/useFrame";
-import type { TrackTimeline } from "../model/timeline";
+import { lyricTime, type TrackTimeline } from "../model/timeline";
 
 interface Props {
   engine: PlaybackEngine;
@@ -29,7 +29,7 @@ const VOICE_RGB = { male: "0, 212, 255", female: "244, 160, 192", duet: "232, 20
 export default function PitchLane({ engine, timeline, tracker, session, activeIdx, cursorIdx, reducedMotion, micLatency }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sizeRef = useRef({ w: 0, h: 0, dpr: 1 });
-  const baseRef = useRef({ laneBase: 48, lineIdx: -1 });
+  const baseRef = useRef({ laneBase: 48, lineIdx: -1, keyOffset: 0 });
 
   useEffect(() => {
     const c = canvasRef.current;
@@ -52,16 +52,19 @@ export default function PitchLane({ engine, timeline, tracker, session, activeId
     const ctx = c.getContext("2d");
     const { w, h, dpr } = sizeRef.current;
     if (!ctx || !w || !h) return;
-    const t = f.time + (timeline.track.offset ?? 0);
+    const t = lyricTime(f, timeline.track);
     const flat = timeline.flat;
     const lines = timeline.track.lines;
 
-    // lane base follows the active (or upcoming) line's lowest note
+    // lane base follows the active (or upcoming) line's lowest note (in the current key)
     const refLine = activeIdx >= 0 ? activeIdx : Math.min(cursorIdx, lines.length - 1);
-    if (refLine !== baseRef.current.lineIdx && refLine >= 0) {
+    if ((refLine !== baseRef.current.lineIdx || timeline.keyOffset !== baseRef.current.keyOffset) && refLine >= 0) {
       let min = Infinity;
-      for (const s of lines[refLine].syllables) if (s.note !== undefined && s.note < min) min = s.note;
-      baseRef.current = { laneBase: Number.isFinite(min) ? min - 1 : baseRef.current.laneBase, lineIdx: refLine };
+      for (const s of lines[refLine].syllables) {
+        const n = timeline.noteOf(s);
+        if (n !== undefined && n < min) min = n;
+      }
+      baseRef.current = { laneBase: Number.isFinite(min) ? min - 1 : baseRef.current.laneBase, lineIdx: refLine, keyOffset: timeline.keyOffset };
     }
     const laneBase = baseRef.current.laneBase;
     const pad = 10;
@@ -102,12 +105,13 @@ export default function PitchLane({ engine, timeline, tracker, session, activeId
     // target bars
     const barH = Math.max(6, rowH * 0.8);
     for (const s of flat) {
-      if (s.note === undefined) continue;
+      const note = timeline.noteOf(s);
+      if (note === undefined) continue;
       if (s.end < t - PAST || s.start > t + FUTURE) continue;
       const x0 = Math.max(2, xOf(s.start));
       const x1 = Math.min(w - 2, xOf(s.end));
       if (x1 <= x0) continue;
-      const y = yOf(s.note);
+      const y = yOf(note);
       const rgb = VOICE_RGB[s.voice];
       const live = t >= s.start && t <= s.end;
       const res = session.getResult(s.globalIdx);

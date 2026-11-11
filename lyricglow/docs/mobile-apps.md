@@ -78,5 +78,11 @@ splash, `https` scheme. CocoaPods is not required (Capacitor 8 uses Swift Packag
 - **Review risk**: Apple sometimes rejects thin web wrappers (guideline 4.2). LyricGlow
   has substantial native-feeling functionality (mic scoring, recognition, offline shell),
   but keep the store description focused on singing features, not "a website".
+- **Key change flag**: the SoundTouch key change ships only when the build sets
+  `VITE_FEATURE_KEY=1` (web: a Vercel environment variable + redeploy; native: the
+  variable on `build:native` + a store release). Before turning it on, run the owner's
+  device check: a local MP3 at key −2 with Vocals off and the mic on for 10 minutes on the
+  Android phone, listening for dropouts; and the pitch lane / score staying in tune. Record
+  the result in `egm/karafun-set/goldfish_review_report.md`.
 - **Updating**: web and PWA update on deploy. Native apps need `npm run build:native`
   and a new store build each time you want the shell's bundled copy refreshed.

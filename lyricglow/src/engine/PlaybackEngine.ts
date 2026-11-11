@@ -16,6 +16,12 @@ export interface Frame {
   now: number;
   /** bumps on seek / restart / source change so consumers reset caches */
   generation: number;
+  /**
+   * How far `time` runs ahead of what is audible, in song seconds (output latency ×
+   * rate). 0 unless a processing stage such as the pitch shifter sits in the graph.
+   * Lyric consumers subtract it through `lyricTime()`.
+   */
+  lead: number;
 }
 
 import { mediaTransport, type Transport, type TransportEvent } from "./Transport";
@@ -51,12 +57,21 @@ function glide(cur: number, target: number, dt: number, rate: number): number {
 }
 
 export class PlaybackEngine {
-  readonly frame: Frame = { time: 0, dt: 0, rate: 1, playing: false, now: 0, generation: 0 };
+  readonly frame: Frame = { time: 0, dt: 0, rate: 1, playing: false, now: 0, generation: 0, lead: 0 };
   /** called synchronously inside play() (user gesture) — used to resume the AudioContext */
   private onBeforePlay: (() => void) | null = null;
+  /** wall-second delay of the audio output path (pitch shifter); scaled by rate into frame.lead */
+  private outputLatency = 0;
 
   setBeforePlay(fn: (() => void) | null): void {
     this.onBeforePlay = fn;
+  }
+
+  setOutputLatency(seconds: number): void {
+    const s = Math.max(0, seconds) || 0;
+    if (s === this.outputLatency) return;
+    this.outputLatency = s;
+    this.requestFrame();
   }
 
   private transport: Transport | null = null;
@@ -161,6 +176,8 @@ export class PlaybackEngine {
     f.now = now;
     f.dt = dt;
     f.playing = this.playingFlag;
+    // the delay only exists on the media path (the demo synth is scheduled on the context clock)
+    f.lead = this.transport ? this.outputLatency * f.rate : 0;
 
     if (this.transport) {
       const tr = this.transport;

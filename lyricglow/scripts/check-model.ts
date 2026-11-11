@@ -2,7 +2,7 @@
 // Run: npm run check:model
 import demoTrack from "../src/demoTrack";
 import { normalizeTrack } from "../src/model/normalize";
-import { buildTimeline } from "../src/model/timeline";
+import { buildTimeline, lyricTime } from "../src/model/timeline";
 import { splitSyllables } from "../src/model/syllables";
 import { exportEnhancedLrc, parseLrc } from "../src/model/lrc";
 import { parseTrackJson, trackToJson, sniffKind } from "../src/model/trackIO";
@@ -305,6 +305,31 @@ ok(Math.abs(8.0 - TAP_REACTION_S + off - 6.0) < 1e-9, "media time + offset lands
 ok(lineLabel(demoN.lines[0]) === "Softly now the light fades", `line label: ${lineLabel(demoN.lines[0])}`);
 ok(lineLabel(demoN.lines[1], 3) === "Lanterns drift above…", `truncated label: ${lineLabel(demoN.lines[1], 3)}`);
 ok(formatOffset(1.3) === "+1.30 s" && formatOffset(-0.5) === "−0.50 s", "formatOffset");
+
+console.log("\nkey change (transposition accessor, lyric time with output lead, transposed scoring)");
+{
+  const tlk = buildTimeline(normalizeTrack(demoTrack));
+  const flatBefore = tlk.flat;
+  const noted = tlk.flat.find((s) => s.note !== undefined)!;
+  ok(tlk.keyOffset === 0 && tlk.noteOf(noted) === noted.note, "key 0: noteOf returns the written note");
+  tlk.setKeyOffset(-2);
+  ok(tlk.noteOf(noted) === noted.note! - 2, `key −2: noteOf is two semitones lower (${noted.note} → ${tlk.noteOf(noted)})`);
+  ok(tlk.noteOf({ note: undefined }) === undefined, "a syllable without a note stays without one");
+  ok(tlk.flat === flatBefore && tlk.keyOffset === -2, "setKeyOffset mutates in place (no rebuild, score and synths survive)");
+  tlk.setKeyOffset(0.4);
+  ok(tlk.keyOffset === 0, "fractional offsets round to whole semitones");
+  ok(Math.abs(lyricTime({ time: 10, lead: 0 }, { offset: 0.5 }) - 10.5) < 1e-9, "lyricTime = time + offset when nothing is in the graph");
+  ok(Math.abs(lyricTime({ time: 10, lead: 0.128 * 2 }, { offset: 0 }) - 9.744) < 1e-9, "lyricTime subtracts the shifter lead (128 ms × 2× rate = 0.256 s)");
+  ok(Math.abs(lyricTime({ time: 10, lead: 0.128 }, { offset: -0.3 }) - 9.572) < 1e-9, "lead and offset combine");
+  const target = { start: 20, end: 20.5, note: 64, emphasis: false };
+  const sung = mk(19.98, 20.5, 62); // the singer follows the backing track two semitones down
+  const tlDown = buildTimeline(normalizeTrack(demoTrack));
+  tlDown.setKeyOffset(-2);
+  const transposed = scoreSyllable({ ...target, note: tlDown.noteOf(target) }, 19.5, sung, "normal");
+  const untransposed = scoreSyllable(target, 19.5, sung, "normal");
+  ok(transposed.pitchScore !== null && transposed.pitchScore > 0.95, `key −2: singing the transposed note scores ${transposed.pitchScore?.toFixed(2)}`);
+  ok(untransposed.pitchScore !== null && untransposed.pitchScore < 0.5, `without transposition the same singing would score ${untransposed.pitchScore?.toFixed(2)}`);
+}
 
 console.log("\nmedia clock slew (PlaybackEngine with a coarse transport)");
 {

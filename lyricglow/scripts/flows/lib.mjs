@@ -33,7 +33,8 @@ export async function startDevServer(extraEnv = {}) {
   const port = new URL(BASE).port || "5173";
   const proc = spawn(path.join(ROOT, "node_modules", ".bin", "vite"), ["--port", port, "--strictPort"], {
     cwd: ROOT,
-    env: { ...process.env, VITE_YT_API_KEY: "testkey-ABC123", ...extraEnv },
+    // the test server has every feature flag on; "flag off = today" is covered by key 0 being a true bypass
+    env: { ...process.env, VITE_YT_API_KEY: "testkey-ABC123", VITE_FEATURE_KEY: "1", ...extraEnv },
     stdio: "ignore",
     detached: true,
   });
