@@ -613,7 +613,15 @@ export default function App() {
         <div className="stage-spotlight stage-spotlight--center" />
       </div>
 
-      {media && <MediaElement key={media.url} engine={engine} kind={media.mediaKind} src={media.url} />}
+      {media && (
+        <MediaElement
+          key={media.mediaKind}
+          engine={engine}
+          kind={media.mediaKind}
+          src={media.url}
+          onError={() => setNotice({ kind: "error", text: `Couldn't open ${media.name}. Is the file still there, and is it a format this browser plays?` })}
+        />
+      )}
       {source.kind === "youtube" && (
         <YouTubeStage
           key={source.videoId}

@@ -306,6 +306,24 @@ export class PlaybackEngine {
     return this.transport?.element ?? null;
   }
 
+  /**
+   * The attached element received a new `src` (next song of a set on the same element):
+   * forget the previous source's clock state and let consumers reset, as a re-attach would.
+   */
+  mediaSourceChanged(): void {
+    const tr = this.transport;
+    if (!tr) return;
+    this.ended = false;
+    this.lastMediaTime = -1;
+    this.frame.time = 0;
+    this.frame.generation++;
+    this.playingFlag = tr.playing();
+    this.duration = tr.duration();
+    tr.setRate(this.frame.rate);
+    this.publish();
+    this.requestFrame();
+  }
+
   get currentTransport(): Transport | null {
     return this.transport;
   }

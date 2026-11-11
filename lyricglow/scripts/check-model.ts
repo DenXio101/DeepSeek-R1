@@ -20,6 +20,7 @@ import { acrStringToSign, parseAcrResponse } from "../api/recognize";
 import { downsample, encodeWav16, readWavHeader } from "../src/model/wav";
 import { createHmac } from "node:crypto";
 import { PlaybackEngine } from "../src/engine/PlaybackEngine";
+import { EMPTY_SET, addEntry, entryFrom, nextIndex, removeEntry, type SetState } from "../src/hooks/useSongSet";
 import type { Transport } from "../src/engine/Transport";
 
 let failures = 0;
@@ -329,6 +330,33 @@ console.log("\nkey change (transposition accessor, lyric time with output lead, 
   const untransposed = scoreSyllable(target, 19.5, sung, "normal");
   ok(transposed.pitchScore !== null && transposed.pitchScore > 0.95, `key −2: singing the transposed note scores ${transposed.pitchScore?.toFixed(2)}`);
   ok(untransposed.pitchScore !== null && untransposed.pitchScore < 0.5, `without transposition the same singing would score ${untransposed.pitchScore?.toFixed(2)}`);
+}
+
+console.log("\nsong set (pure helpers)");
+{
+  const fakeFile = (name: string) => ({ name, type: name.endsWith(".mp4") ? "video/mp4" : "audio/mpeg" }) as unknown as File;
+  let s: SetState = EMPTY_SET;
+  for (let i = 1; i <= 8; i++) s = addEntry(s, entryFrom(fakeFile(`song${i}.mp3`), null)).state;
+  ok(s.entries.length === 8, "eight songs fit");
+  const ninth = addEntry(s, entryFrom(fakeFile("song9.mp3"), null));
+  ok(!ninth.ok && ninth.state === s && /full/.test(ninth.reason ?? ""), `a ninth is refused: ${ninth.reason}`);
+  ok(s.entries[0].title === "song1" && s.entries[0].artist === "" && s.entries[0].mediaKind === "audio", "title falls back to the file stem, kind from the type");
+  ok(entryFrom(fakeFile("clip.mp4"), null).mediaKind === "video", "mp4 → video");
+  const withLyrics = entryFrom(fakeFile("x.mp3"), normalizeTrack(demoTrack));
+  ok(withLyrics.title === demoTrack.title && withLyrics.artist === demoTrack.artist, "lyrics give the title and artist");
+  s = { ...s, index: 2, active: true };
+  ok(nextIndex(s) === 3, "next index after song 3 is song 4");
+  ok(nextIndex({ ...s, index: 7 }) === null, "no next after the last song");
+  const before = removeEntry(s, s.entries[0].id);
+  ok(before.index === 1 && before.entries.length === 7, "removing a song before the current one shifts the index");
+  const cur = removeEntry(s, s.entries[2].id);
+  ok(cur.index === 2 && cur.entries[2].title === "song4", "removing the current song points at the next one");
+  const last = removeEntry({ ...s, index: 7 }, s.entries[7].id);
+  ok(last.index === 6 && last.active, "removing the last song while on it clamps to the new last");
+  let empty = s;
+  for (const e of s.entries) empty = removeEntry(empty, e.id);
+  ok(empty.index === -1 && !empty.active && empty.entries.length === 0, "an emptied set is inactive");
+  ok(removeEntry(s, "nope") === s, "unknown id is a no-op");
 }
 
 console.log("\nmedia clock slew (PlaybackEngine with a coarse transport)");
