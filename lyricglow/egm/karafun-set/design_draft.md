@@ -1,360 +1,352 @@
-# Finish the KaraFun set — key change, Vocals switch, intro card and song queue
+# Finish the KaraFun set — Vocals switch, key change, song set with intro card
 
 *   **Author:** Dennis Valencia (repo owner; drafted by the session agent)
-*   **Status:** Draft
-*   **Date:** 2026-11-10
-*   **Source of truth:** `concepts_brief.md` in this folder (decisions D1–D12), `feature_concept.md`, and the code under `lyricglow/src` at commit `c6c0951`.
+*   **Status:** Approved for build (resolved after Goldfish review, 2026-11-11)
+*   **Date:** 2026-11-11
+*   **Source of truth:** this document. `concepts_brief.md` and `feature_concept.md` in this folder are background; the decisions they record are restated here. Code references are to `lyricglow/src` at commit `c6c0951`.
 
 --------------------------------------------------------------------------------
 
 ## Overview
 
-LyricGlow is a browser karaoke stage (React 19, TypeScript, Vite, plain CSS; also an installable PWA and Capacitor shells). It already shows lyrics the KaraFun way. This design adds the "player" half of a karaoke machine for songs loaded as local files:
+LyricGlow is a browser karaoke stage (React 19, TypeScript, Vite, plain CSS; also an installable PWA and Capacitor shells). It already shows lyrics the KaraFun way. This design adds the "player" half of a karaoke machine for songs loaded as local files, in three independent slices that ship in this order:
 
-1. a **Vocals switch** on the thumb bar that mutes or restores the original singer with one tap,
-2. a **key change** in semitones that transposes the backing track without changing tempo, and keeps the scoring, guide hum and demo melody in the same key,
-3. a **song queue** with an **intro card** (title, artist, countdown) before each song and a "Next" button on the result screen.
+1. a **Vocals switch** on the thumb bar that mutes or restores the original singer with one tap;
+2. a **key change** in semitones that transposes the backing track without changing tempo, keeping the scoring, guide hum and demo melody in the same key — behind a single build flag and gated by a spike with a stated exit;
+3. a **song set**: up to eight local files lined up with their lyrics, an **intro card** (title, artist, countdown) before each, and a "Next" button on the result screen.
 
-The engine clock is never changed by any of these, so lyric sync is unaffected by construction. Everything ships in slices behind build-time flags so each slice can be reverted by a redeploy.
+The engine clock is never changed by any of these. The one place the compensated lyric time is computed (`lyricTime`) is shared by every reader, so a key change moves every consumer together.
 
-Plain-language glossary used below: *engine clock* = the single time source every lyric consumer reads (`PlaybackEngine.frame.time`); *vocal chain* = the existing centre-channel reducer in `AudioGraph`; *worklet* = a small audio program that runs on the browser's audio thread; *object URL* = a temporary browser address for a local file.
+Glossary: *engine clock* = the single time source every lyric consumer reads (`PlaybackEngine.frame.time`); *vocal chain* = the existing centre-channel reducer in `AudioGraph`; *worklet* = a small audio program that runs on the browser's audio thread; *object URL* = a temporary browser address for a local file; *thumb bar* = the bottom control row (`ThumbBar.tsx`: seek row above five targets); *cue slot* = the area above the lyrics where `CountIn` and `SectionCard` render; *toast stack* = the stacked notices at the top of the stage; *source kind* = `BackingSource.kind` in `App.tsx`: `none` (demo), `file`, `youtube`, `listen`; *set* = the queue of songs for one session.
 
 ## The Problem
 
-Users play a song from a local MP3/MP4 and want what a KaraFun machine gives them: the singer's voice off, the key lowered to fit their range, and a few songs lined up with a title card between them. Today the voice level is a slider buried under More, there is no key control at all, and the app knows one song at a time: `source` and `track` are separate React states in `App.tsx`, changed by eight different handlers, and the result screen only offers "Sing again" and "Close".
+Users play a song from a local MP3/MP4 and want what a KaraFun machine gives them: the singer's voice off, the key lowered to fit their range, and a few songs lined up with a title card between them. Today the voice level is a slider under More, there is no key control at all, and the app knows one song at a time: `source` and `track` are separate React states in `App.tsx` (lines 90 and 70), the result screen only offers "Sing again" and "Close".
 
-Proposed solution: add one new audio stage (a SoundTouch pitch-shifting worklet, present only when key ≠ 0), one new state owner (`SongQueue`, a plain TypeScript module with a thin hook, in the pattern of `KaraokeSession`) that holds songs, per-song settings and file lifetimes, one explicit session flow state machine (idle → intro → playing → finished → grade → advancing), and three small UI changes (Vocals switch, Restart moved into the seek row, Key stepper next to Speed).
+Proposed solution, smallest shape that works:
+
+*   **Vocals**: a switch that writes 0 or the last non-zero value into the existing `vocalLevel` state. Restart moves into the seek row so the thumb bar keeps five targets.
+*   **Key**: one new audio stage, the SoundTouch pitch-shifting worklet, inserted after the vocal chain only while key ≠ 0. The key lives in App state beside `vocalLevel`. The shifter's fixed delay is written into the engine frame and subtracted by one shared helper. Transposition is a settable offset on the timeline that every note reader calls.
+*   **Set + intro**: one hook (`useSongSet`) that owns the entries, the current index and the one live object URL; one boolean (`introActive`) in App for the intro card; the card calls the existing `engine.play()` when its countdown ends.
 
 ## Goals
 
-*   G1 Vocals: one tap on the thumb bar sets the original-vocal level to 0; a second tap restores the last non-zero level (default 0.35). The Voice slider under More edits the same value. On mono files the switch is disabled with the existing "mono file" note. Hidden for YouTube, Listen and the demo. Thumb bar keeps five targets ≥ 44 px at 320 px wide (verified by the existing layout script).
-*   G2 Key: a stepper under More → "Key & speed" changes the key of a local file from −6 to +6 semitones. Tempo is unchanged by a key change. Lyric time stays within **30 ms** of the audible position at any key and at speeds 0.5×, 1× and 2× (measured as: the shifter's reported latency is a constant that is subtracted from the lyric clock only while key ≠ 0). Scoring, the pitch lane, the demo melody and the guide hum apply the same semitone offset. A key badge is visible on the stage whenever key ≠ 0.
-*   G3 Queue: up to 8 songs (file + lyrics + per-song settings). Add flow: pick file → pick lyrics → queued. List with move-up, move-down, remove (44 px buttons). The result screen in a set shows "Next: <title>" as the primary button, then "Sing again", then "End set"; it waits for a tap. Key carries over between songs; tempo resets to 1×. The queue is lost on reload (no storage allowed) and the app says so.
-*   G4 Intro: before each file-backed song, a card with title, artist, key (if ≠ 0) and a 3-beat countdown using the existing count-in dots; it replaces the first line's own count-in when the song starts at 0; one tap skips it; audio starts at the end of the countdown with the clock at 0. YouTube and Listen sources show the card with no countdown and no delay.
-*   G5 Safety: key 0 is a true bypass (the worklet is not in the graph); worklet load failure or an unsupported browser hides the Key control and leaves audio exactly as today. With `VITE_FEATURE_QUEUE` off, every existing flow behaves exactly as today (same result screen, same object-URL handling).
-*   G6 Verification: pure logic (queue operations, flow transitions, semitone ratio, transposition) has fixtures in `scripts/check-model.ts`; a browser flow "three songs, advance, key −2, vocals off" lives **in the repo** under `scripts/flows/` and runs against the dev server.
+*   **G1 Vocals**: one tap on the thumb bar sets the original-vocal level to 0; a second tap restores the last non-zero level (default 0.35). The Voice slider under More edits the same value. The switch is enabled for local stereo files; disabled with the one string "Mono file — can't separate vocals" when the mono verdict is positive; disabled with "Local files only" for YouTube, Listen and the demo. The thumb bar keeps five targets ≥ 44 px at 320 px wide (checked by the layout flow).
+*   **G2 Key**: a stepper under More changes the key of a local file from −6 to +6 semitones with tempo unchanged. The lyric highlight stays within **30 ms** of the audible position at any key and at speeds 0.5×, 1× and 2× (the residual after the measured shifter delay is subtracted; unconfirmed until Q3 is measured). Scoring, the pitch lane, the demo melody and the guide hum read the same semitone offset through one accessor. A small "Key −2" pill is visible whenever key ≠ 0. The demo track accepts a key change (synth only, no worklet).
+*   **G3 Set**: up to 8 songs (local file + lyrics). Add flow: pick file → pick lyrics → added. List with remove (44 px). The result screen in a set shows "Next: <title>" as the primary button, then "Sing again", then "End set"; it waits for a tap. Key and vocal level carry over between songs (they are session state); tempo resets to 1×. The set is lost on reload (no storage allowed) and the panel says so.
+*   **G4 Intro**: when a set is started or advanced, a card with title, artist, "Song N of M", the key if ≠ 0, and a three-beat countdown using the existing count-in dots; audio starts at the end of the countdown with the clock at 0; one tap skips it; the first line's own count-in is suppressed for that start so there is never a double countdown. A single file played outside a set never shows the card.
+*   **G5 Safety**: with `VITE_FEATURE_KEY` off (the default on web and native until Q1 and Q3 are measured) the audio path — graph topology, `preservesPitch`, the clock — is identical to today. With the flag on, key 0 is a true bypass (the worklet is not in the graph); worklet load failure or an unsupported browser shows a reason in the Key row and leaves audio exactly as today.
+*   **G6 Verification**: pure logic (set operations, transposition accessor, `lyricTime`, semitone ratio) has fixtures in `scripts/check-model.ts`; the browser flows live **in the repo** under `scripts/flows/` and run against the dev server; a three-song set flow and a key flow are added.
 
 ## Non-Goals
 
-*   Key, tempo or vocal changes for YouTube or Listen sources (no audio access).
-*   Auto-matching lyrics for queued files from the file name; queue entries allow an empty track ("no lyrics yet" state) so this can be added later as an enrichment.
-*   Drag-to-reorder, persistence across reloads, shared/party queues, more than 8 entries, auto-advance timers.
+*   Key or vocal changes for YouTube or Listen sources (no audio access), and YouTube or Listen entries in a set (sets are local files only).
+*   Auto-matching lyrics for set entries from the file name; entries allow an empty track ("no lyrics yet") so this can be added later.
+*   Drag-to-reorder, move-up/move-down buttons (remove and re-add covers 8 entries), persistence across reloads, shared/party sets, more than 8 entries, auto-advance timers.
 *   Replacing the Voice slider or the Speed slider.
-*   A hand-written DSP shifter (the `PitchShifter` interface allows one later).
-*   Transposing a YouTube video's audio.
+*   A hand-written DSP shifter, an abstract shifter interface, in-worklet CPU auto-bypass, a diagnostics module or export, new hotkeys.
 
 ## Open Questions
 
-*   **Q1 (device test)**: CPU headroom of the SoundTouch worklet on a mid-range Android phone (e.g. a 2022 A-series) with the vocal chain active. Design assumes it fits; Phase 5 includes a device run that measures worklet underruns via the diagnostics counter before the flag defaults on in production.
-*   **Q2 (iOS autoplay)**: whether `media.play()` called from the queue's `advance()` (no fresh gesture) is allowed on iOS Safari and in the Capacitor WKWebView when the same `<audio>` element and a running AudioContext are reused. Design assumes yes (continuation of an already-started element is allowed); Phase 4 includes a device check, and the fallback is that the intro card's countdown waits for a tap on iOS.
-*   **Q3 (latency value)**: the shifter's group delay. The SoundTouch worklet does not report latency. Phase 5 measures it with a click test (impulse through the chain vs. bypass, cross-correlated in a fixture run in a headless browser) and stores it as `SHIFTER_LATENCY_S`; expected 20–60 ms.
+*   **Q1 (device CPU)**: CPU headroom of the SoundTouch worklet on the owner's Android phone with the vocal chain active. The owner has the phone; the check is 10 minutes at key −2, vocals off, mic on, listening for dropouts. Until it passes, `VITE_FEATURE_KEY` stays off in production and in `build:native`.
+*   **Q2 (iOS autoplay on advance)**: whether `play()` from the intro card's timer is allowed on iOS Safari and in the Capacitor WKWebView after the element was primed inside the "Start set"/"Next" tap. The owner has an iPhone; the check is in Phase 4. Fallback if `play()` rejects: the card switches to "Tap to start" and waits.
+*   **Q3 (latency value)**: the shifter's group delay. The worklet does not report latency. The Phase 2 spike measures it with a click test at 0.5×, 1× and 2×; if the spread across rates exceeds 10 ms the value is stored per rate, otherwise as one constant. The owner accepted the 30 ms tolerance pending this measurement.
 
 ## Critical User Journeys (CUJs)
 
 ### CUJ 1: Vocals off with one tap
 
-*   **Given**: a stereo MP3 is loaded as the backing track (source kind `file`), lyrics are loaded, `VITE_FEATURE_VOCALS_SWITCH` is on.
+*   **Given**: a stereo MP3 is loaded as the backing track (source kind `file`) and lyrics are loaded.
 *   **When**: the user taps the Vocals switch on the thumb bar.
-*   **Then**: the vocal level becomes 0 within one frame, the switch shows "Off" (text + knob position, not colour only), the Voice slider under More reads 0 %, and the stage lights keep following the music. A second tap restores 35 % (or the last slider value). On a mono file the switch is disabled with the note "Mono file — can't separate vocals".
+*   **Then**: the vocal level becomes 0 within one frame, the switch shows "OFF" (text + knob position, not colour only), the Voice slider under More reads 0 %, the stage lights keep following the music. A second tap restores 35 % (or the last slider value). On a mono file the switch is disabled with "Mono file — can't separate vocals".
 
 ### CUJ 2: Lower the key by two semitones
 
-*   **Given**: a local file is playing at 1×, key 0, mic on, `VITE_FEATURE_KEY` on, the browser supports AudioWorklet.
-*   **When**: the user opens More → Key & speed and taps "−" twice.
-*   **Then**: the audio is two semitones lower at the same tempo; a "Key −2" badge appears on the stage; the pitch lane's target bars and the scoring targets are two semitones lower; the guide hum sounds two semitones lower; the lyric highlight stays within 30 ms of the audio. Tapping "Reset" returns to key 0 and removes the shifter from the graph.
+*   **Given**: a local file is playing at 1×, key 0, mic on, the build has `VITE_FEATURE_KEY=1`, the browser supports AudioWorklet.
+*   **When**: the user opens More → Key and taps "−" twice.
+*   **Then**: the audio is two semitones lower at the same tempo; the Key row reads "−2 · on"; a "Key −2" pill shows on the stage; the pitch lane's target bars, the scoring targets and the guide hum are two semitones lower; the lyric highlight stays within 30 ms of the audio. Tapping "0" returns to key 0 and removes the shifter from the graph.
 
 ### CUJ 3: A three-song set
 
-*   **Given**: `VITE_FEATURE_QUEUE` on; the user has three MP3s and knows the song names.
-*   **When**: the user opens Find song → Queue, taps "Add song", picks a file, picks the lyrics from the search results, repeats twice, then taps "Start set".
-*   **Then**: an intro card shows "Song 1 of 3 · <title> — <artist>" with three countdown dots; the music starts when the dots run out (or earlier on a tap); at the end the result screen shows the grade with "Next: <title 2>"; tapping it shows the second intro card with "Key −2" if the user changed the key during song 1; after song 3 the result screen offers "Sing again" and "End set". Nothing is stored; a reload empties the queue and the Queue tab says so.
+*   **Given**: the user has three MP3s and knows the song names.
+*   **When**: the user opens Find song → Set, taps "Add song", picks a file, picks the lyrics from the search results, repeats twice, then taps "Start set".
+*   **Then**: an intro card shows "Song 1 of 3 · <title> — <artist>" with three countdown dots; the music starts when the dots run out (or earlier on a tap); at the end the result screen shows the grade with "Next: <title 2>" focused; tapping it shows the second intro card with "Key −2" if the key was changed during song 1; after song 3 the result screen offers "Sing again" and "End set". A reload empties the set and the Set section says so.
 
 ### CUJ 4: Worklet unavailable
 
-*   **Given**: an older browser without AudioWorklet, or the worklet module fails to load.
+*   **Given**: the flag is on but the browser has no AudioWorklet, or the processor file fails to load.
 *   **When**: the user opens More.
-*   **Then**: the Key row shows "Key change is not available in this browser" and no stepper; audio plays exactly as today; the diagnostics log records the failure reason.
+*   **Then**: the Key row reads "Key change isn't available in this browser" and the stepper is disabled; audio plays exactly as today.
 
 ## Technical Plan (Architecture)
 
 ### Audio graph (local files)
 
+Today (`AudioGraph.sourceFor`, `attachMedia`, `useSource`):
+
 ```text
-<audio>/<video> ──► MediaElementSource ──► VocalChain ──► [PitchShifter] ──► AnalyserTap ──► destination
-                                             │ (L−R side + low bass;        (SoundTouchNode,
-                                             │  mono detector reads here)    present only when key ≠ 0)
+<audio>/<video> ─► MediaElementSource ─► VocalChain ─► chain.output ─► destination
+                                                           └─► analyser (side branch, lights only)
 ```
 
-*   The element → source → vocal chain binding stays exactly as `AudioGraph.sourceFor()` builds it today (one source per element for the life of the document).
-*   `AudioGraph` gains a named stage list per element: `chain.output → stages.shifter? → stages.analyserTap → destination`. A new method `setKey(el, semitones)` inserts the shifter on the first non-zero value (`chain.output.disconnect(destination); chain.output.connect(shifter); shifter.connect(tapInput)`) with a 30 ms gain crossfade, and removes it again at 0. The analyser tap is moved to after the shifter so lights follow what is heard.
-*   `PitchShifter` is an interface in `src/engine/PitchShifter.ts`: `{ status, node, setSemitones(n), latencySeconds, dispose() }`. The only implementation in this release is `SoundTouchShifter` using `@soundtouchjs/audio-worklet` (MPL-2.0, 296 KB unpacked, ~60 KB processor file): `SoundTouchNode.register(ctx, processorUrl)` once, then `node.pitchSemitones.value = n`, `node.playbackRate.value = el.playbackRate` mirrored on every rate change, and `el.preservesPitch = false` **only while the shifter is in the graph** (restored to `true` on removal). The processor is imported with Vite's `?url` suffix so it is emitted under `/assets/` (the SPA rewrite in `vercel.json` excludes `/assets/`, and the service-worker precache glob already matches `**/*.js`).
-*   Why `preservesPitch = false` while shifting: the SoundTouch processor expects the raw rate-changed signal and corrects pitch itself; with the browser's own correction on top the result would be double-corrected. At key 0 the node is absent and the browser's pitch-preserving rate change is used as today, so the default path is unchanged.
-*   Tempo stays `engine.setRate()` → `el.playbackRate`. The shifter never changes the element's rate; it only mirrors it.
-*   Latency: `SHIFTER_LATENCY_S` (measured in Phase 5, Q3) is exposed through `AudioGraph.outputLatencyFor(el)` = `SHIFTER_LATENCY_S` when the shifter is present, else 0. `KaraokeSession.onFrame` subtracts it from `t` (alongside `track.offset`) so the lyric highlight matches what is heard. The engine clock itself is untouched.
+With `VITE_FEATURE_KEY=1` and key ≠ 0 (`AudioGraph.setKey(el, n)`):
 
-### Key offset for everything that reads MIDI notes
+```text
+<audio>/<video> ─► MediaElementSource ─► VocalChain ─► chain.output ─► SoundTouchNode ─► destination
+                                                                              └─► analyser (side branch)
+```
 
-A single number `keyOffset` (semitones) lives on the current `SongEntry`. Consumers add it where they read a syllable's `note`:
+*   Insert: `chain.output.disconnect(destination)`; `chain.output.connect(shifter)`; `shifter.connect(destination)`; the analyser's input is re-pointed to the shifter so the lights follow what is heard. Remove at key 0: the reverse, then the node is kept for reuse (no re-registration). The element → source → vocal chain binding stays exactly as built today (one source per element for the life of the document; the mono detector keeps reading the raw source).
+*   Library: `@soundtouchjs/audio-worklet` 2.1.1 (MPL-2.0; checked on the registry 2026-11-11: node 5.8 KB, processor 72.9 KB raw / 16.9 KB gzipped; depends on `@soundtouchjs/core`). Its README documents exactly this topology: a `MediaElementSource` connected to a `SoundTouchNode`, `el.preservesPitch = false`, `el.playbackRate` mirrored into `node.playbackRate.value` ("the processor automatically compensates pitch"), `node.pitchSemitones.value` for the key.
+*   `src/engine/SoundTouchShifter.ts` (concrete class, no interface): `load(ctx)` lazily `import()`s the node module and registers the processor once per context (the processor is imported with Vite's `?url` suffix so it is emitted under `/assets/`; the SPA rewrite excludes `/assets/`; the PWA precache glob `**/*.js` includes it, which is the decision: 17 KB once at install so Key works offline); `status: "idle" | "loading" | "on" | "unavailable"` with a reason; `setSemitones(n)`; `setRate(r)` (mirror); `node`.
+*   `el.preservesPitch` (and `webkitPreservesPitch` on older Safari) is `false` only while the shifter is in the graph and is restored to `true` on removal; at key 0 the browser's own pitch-preserving rate change is used as today.
+*   Tempo stays `engine.setRate()` → `el.playbackRate`; App mirrors every rate change into the shifter. The shifter never changes the element's rate.
+*   Graph changes are made with a 30 ms gain crossfade on `chain.output` to avoid clicks.
 
-*   `scoring.ts` → `scoreSyllable(syl, …, keyOffset)` compares `s.midi` to `syl.note + keyOffset`.
-*   `PitchLane.tsx` draws target bars at `note + keyOffset`.
-*   `DemoSynth.playNote` and `GuideSynth.playHum` use `midiToHz(note + keyOffset)`.
-*   The demo track (no file) accepts a key change too (synthesized melody only); the Key stepper is enabled for the demo and local files, disabled with a reason for YouTube/Listen.
+### Latency compensation (one place)
 
-### Session flow state machine
+*   `PlaybackEngine.setOutputLatency(seconds)` stores the shifter delay (wall seconds; 0 when the shifter is absent). Each frame the engine writes `frame.lead = latency × frame.rate` (song seconds).
+*   `model/timeline.ts` exports `lyricTime(frame, track) = frame.time − frame.lead + (track.offset ?? 0)`. Every reader that computes `f.time + offset` today uses it: `Karaoke.tsx:225`, `SpectrumCanvas.tsx:53`, `PitchLane.tsx:55`, `GuideSynth.ts:134`, `DemoSynth.ts:131`, `KaraokeSession.ts:222`, `model/sync.ts:9` (tap-to-sync, receives the frame), and `PitchTracker.ts:56` (gets `setLead` beside its existing `setOffset`). `ProgressRow` shows media time and is unchanged.
+*   `SHIFTER_LATENCY_S` lives in `SoundTouchShifter.ts` with the measurement date and the rates it was measured at (Q3). Per-rate table only if the spike shows > 10 ms spread.
 
-`src/engine/SongFlow.ts` — a pure reducer with phases `idle | intro | playing | finished | grade | advancing` and events `start | skipIntro | countdownDone | mediaEnded | gradeShown | next | singAgain | endSet | sourceChanged | pause | seek`. The legal-transition table is the single source of truth (fixture-tested). `KaraokeSession` keeps publishing `finished`; `App` feeds `SongFlow` and renders the intro card while `phase === "intro"`. During `intro`, Play/Pause/Seek/Restart cancel the countdown (`skipIntro`) rather than fighting it.
+### Transposition (one accessor)
 
-The intro delay is implemented with the engine's existing before-play hook extended to a **play gate**: `PlaybackEngine.setPlayGate(fn: () => Promise<void> | void)`. `play()` still runs `onBeforePlay` synchronously (AudioContext resume inside the gesture), then awaits the gate, then starts the transport. The gate resolves when the countdown ends or the user taps the card. For YouTube and Listen sources the gate is not installed (card without countdown).
+*   `keyOffset` is App state (`useState(0)`) beside `vocalLevel`. It carries over between songs because nothing resets it.
+*   `effectiveKey` = `keyOffset` when the source is the demo (synth only) or when the shifter status is `on`; otherwise 0 (YouTube, Listen, flag off, worklet loading or unavailable). This is the only value ever handed to the timeline, so the lane and the scoring never move before the audio does.
+*   `TrackTimeline` gains `setKeyOffset(n)` and `noteOf(syl): number | undefined` (= `syl.note + keyOffset`, or `undefined` when the syllable has no note). This is a mutable field on the memoized timeline, like `session.setScoring`, so a key tap does not rebuild the timeline (which would recreate `KaraokeSession`, `GuideSynth` and `DemoSynth` — `App.tsx:109,112,198,215`). Readers: `PitchLane.tsx:63,105,110`, `GuideSynth.ts:166`, `DemoSynth.ts:143,167`, and `scoring.ts:76,113` via the note passed by `KaraokeSession`. The `pitchClassDistance` comparison makes an integer add sufficient.
 
-### Song queue
+### Session state ownership
 
-`src/engine/SongQueue.ts` — plain class with a snapshot for `useSyncExternalStore`, in the `KaraokeSession` pattern:
+| Value | Owner | Set by | Per song or session |
+|---|---|---|---|
+| `vocalLevel` | App state (exists) | Voice slider, Vocals switch | session |
+| `keyOffset` | App state (new) | Key stepper | session |
+| rate | `engine.setRate` (exists) | Speed slider; `useSongSet.next()` resets to 1 | song |
+| `track.offset` | `track` (exists) | Lyrics timing, tap-to-sync | song |
+| `source`, `track` (single song) | App state (exist) | `handleFileUpload`, `handleYouTube`, `startListen`, `clearSource`, `pickSynced`, `pickPlain`, `handleImportFile`, `applyStudioTrack`, `loadTrack` — **unchanged** | — |
+| set entries, index, current object URL | `useSongSet` (new) | Set panel, grade screen | — |
+| `introActive` | App state (new) | `startSet`/`nextSong` set it; card `onDone`/`onSkip`, Pause, Seek, Restart clear it | — |
+
+When a set is active, App derives the backing source from `set.current` (`{ kind: "file", url, mediaKind, name }`) and the track from `set.current.track ?? emptyTrack`; the single-song states are cleared when a set starts. No new App state beyond `keyOffset`, `introActive` and the hook.
+
+### Song set hook
+
+`src/hooks/useSongSet.ts`:
 
 ```ts
-interface SongEntry { id: string; file: File | null; track: Track | null; settings: { key: number; rate: number; vocalLevel: number }; status: "queued" | "current" | "done" | "error"; error?: string }
-class SongQueue { add(entry), remove(id), move(id, dir), start(), advance(), singAgain(), endSet(), setCurrentSettings(patch), snapshot }
+interface SetEntry { id: string; file: File; title: string; artist: string; track: Track | null }
+// state: { entries: SetEntry[]; index: number }   (index −1 = not started)
+// actions: add(file, track) → { ok } (cap 8), remove(id), start(), next(), end()
+// derived: current: { entry, url, mediaKind } | null, position: "Song N of M", hasNext
 ```
 
-*   Owns the File handles and the **one** live object URL: created in `start()`/`advance()` for the new current entry, revoked for the previous one in the same transition. No revocation in React effect cleanups once the flag is on. With the flag off, `App.tsx` keeps today's single-URL effect.
-*   Cap: 8 entries; `add` beyond the cap returns `{ ok: false, reason }` and the UI shows "Queue is full (8 songs)".
-*   `advance()` seeds the next entry's `key` from the current entry (D10) and sets `rate` to 1.0; `vocalLevel` carries over.
-*   One transition `setCurrentSong(entry)` in `App` is the only code path that sets `source` and `track` together; `handleFileUpload`, `pickSynced`, `handleImportFile` and `applyStudioTrack` become callers of it (behaviour unchanged with the flag off: they produce a one-entry "queue").
-*   Memory: one `<audio>/<video>` element is reused across the set (`MediaElement` keyed by a stable id, `src` swapped), so there is exactly one `MediaElementSource` and one vocal chain for the whole set. `preload="auto"` only for the current entry.
+*   Owns the **one** live object URL: `start()`/`next()` create the URL for the new current entry and revoke the previous one in the same call; `end()` and unmount revoke. The existing single-file URL effect in App is untouched for non-set uploads.
+*   `next()` calls `engine.setRate(1)`; nothing else is reset.
+*   Pure helpers `addEntry`, `removeEntry`, `nextIndex` are exported for fixtures.
+
+### Media element reuse
+
+*   `<MediaElement key={media.mediaKind} …>`: same-kind songs (the common case) swap `src` on one element, so the `MediaElementSource` and vocal chain are reused and the element keeps its iOS activation. A mixed-kind set remounts (as today) and relies on the "Tap to start" fallback on iOS.
+*   `MediaElement` calls `engine.mediaSourceChanged()` in an effect on `src`; the engine clears `ended` and `lastMediaTime`, bumps `generation` and re-applies the rate, because `attachMedia` returns early on the same element (`PlaybackEngine.ts:215`).
+
+### Intro card and the iOS prime
+
+*   `introActive` is set by `startSet()`/`nextSong()` in App. While true, `IntroCard` renders in the cue slot and `Karaoke` does not render `CountIn`. The card runs its own countdown: three beats of `timeline.beat` (already derived from `track.bpm` with a 100 bpm fallback), rendered with `CountIn variant="dots"`; on the last beat it calls `onDone` → App sets `introActive = false`, records `skipCountInGeneration = engine.frame.generation`, and calls `engine.play()`. `Karaoke` skips line 0's count-in while `generation === skipCountInGeneration`.
+*   iOS prime, inside the "Start set"/"Next" tap handler, before React re-renders: through the element ref, `el.src = url; el.load(); el.muted = true; await el.play(); el.pause(); el.muted = false; el.currentTime = 0`. The later render sees the same `src`. If `engine.play()` from the card's timer rejects (`mediaTransport.play` reports it through the engine's `error` path), the card shows "Tap to start" (`intro-tap`) and waits.
+*   Pause, Seek, Restart and a source change clear `introActive` and cancel the countdown.
 
 ### UI
 
-*   `ThumbBar`: slot 2 becomes `VocalsSwitch` (same markup pattern as `MicSwitch`: `role="switch"`, oblong, knob + "ON/OFF" text, caption "Vocals"/"Vocals off"); Restart becomes a 44 px ⏮ button at the start of `ProgressRow` (`btn-restart` keeps its testid). When Vocals does not apply (YouTube, Listen, none) the slot shows Restart again so nothing shifts.
-*   `MoreSheet`: the "Speed" section becomes "Key & speed": a stepper row (`key-minus`, `key-value` "0" / "+2" / "−3", `key-plus`, `key-reset`, each ≥ 44 px, `aria-live` readout "Key plus 2 semitones") above the existing Speed slider; a one-line reason text when disabled.
-*   Stage: `KeyBadge` in the toast stack ("Key −2", `key-badge`) when key ≠ 0.
-*   `SongPanel`: a new top-level step "Queue" (only with the flag) listing entries with ⬆ ⬇ ✕ and "Add song" (file picker → lyrics search → add), "Start set", "Song N of M", a "lost on reload" note.
-*   `IntroCard` in the cue slot (SectionCard styling): title, artist, "Song N of M", "Key −2" when ≠ 0, the count-in dots (`CountIn variant="dots"` reused with a synthetic 3-beat state driven by `SongFlow`), tap anywhere to skip; accessible name "Up next: <title>".
-*   `GradeScreen`: `onNext?`, `onEndSet?`, `nextTitle?` props; primary becomes "Next: <title>" (auto-focused via the existing `useModalFocus`), then "Sing again", then "End set".
-*   Diagnostics: `src/engine/Diagnostics.ts` ring buffer (200 events) with `log(kind, data)`; `AudioGraph`, `SongQueue`, `SongFlow` and the shifter log into it; More → Files & tools → "Download diagnostics" writes a JSON file (commit hash from `import.meta.env.VITE_COMMIT`, user agent, context sampleRate/state/latencies, shifter status, queue events, last errors; no lyrics, file names or audio).
+*   `ThumbBar`: slot 2 is `VocalsSwitch` for every source (same markup pattern as `MicSwitch`: `role="switch"`, oblong, knob + "ON/OFF", caption "Vocals" / "Vocals off" / the disabled reason). Restart is removed from the thumb bar and becomes a 44 px ⏮ button at the left end of `ProgressRow` for every source (`btn-restart` keeps its testid and exists in exactly one place).
+*   `MoreSheet`: a "Key" row above the Speed slider: `key-minus`, `key-value` ("0", "+2", "−3"), `key-plus`, `key-zero`; a status line `key-status` ("on" / "loading…" / "not available: <reason>" / "Local files and the demo only"); `aria-live` readout "Key minus 2 semitones". Rendered only when `VITE_FEATURE_KEY=1`.
+*   Stage: `KeyPill` in the toast stack ("Key −2", `key-pill`) when `effectiveKey ≠ 0`.
+*   `SongPanel`: a "Set" section listing entries (`set-item-i`, `set-remove-i`), "Add song" (`set-add`: file picker → the lyrics search is focused with a "for: <file name>" caption → the next `Use` adds the entry), "Start set" (`set-start`), `set-position` ("Song N of M"), the note "Your set lives in this tab only — reloading clears it", and the full message "Set is full (8 songs)".
+*   `IntroCard` in the cue slot (SectionCard styling): title, artist, "Song N of M", "Key −2" when ≠ 0, dots; `role="status"`, accessible name "Up next: <title>", `data-testid="intro-card"`, `intro-countdown` readout, a full-stage transparent button `intro-skip` ("Skip intro"), and `intro-tap` in the fallback state.
+*   `GradeScreen`: props `nextTitle?`, `onNext?`, `onEndSet?`. Buttons in DOM (= focus) order: in a set with a next song `btn-next` ("Next: <title>", primary, first focus) · `btn-sing-again` · `btn-end-set`; last song of a set `btn-sing-again` (first focus) · `btn-end-set`; no set: `btn-sing-again` (first focus) · `btn-close-grade`, as today. `useModalFocus` receives the first-focus selector.
 
-### Feature flags
+### Feature flag
 
-Build-time constants read once in `src/featureFlags.ts`: `VITE_FEATURE_VOCALS_SWITCH`, `VITE_FEATURE_KEY`, `VITE_FEATURE_QUEUE` (strings "1"/"0"; default "1" on the web build, `KEY` default "0" in `build:native` until Q1/Q2 are answered on devices). A URL parameter `?feature=key` overrides for testing in dev builds only (same mechanism as the existing `?listenEvery`).
+`src/featureFlags.ts`: `export const KEY_ENABLED = import.meta.env.VITE_FEATURE_KEY === "1"`. Default off everywhere (no `.env` default, no URL override). Turning it on in production is a Vercel environment variable plus a redeploy; in native shells it is a store release, so native stays off until Q1 passes. Vocals and the set ship without flags and are guarded by the baseline flows.
 
 ## Alternatives Considered
 
 ### Alternative A: `preservesPitch = false` + `playbackRate = 2^(k/12)` for the key
 
 *   **Pros**: no dependency, no worklet, zero CPU.
-*   **Cons**: tempo moves with the key; the engine rate would differ from the user's tempo; fights the rate glide in `PlaybackEngine`.
-*   **Reason for Rejection**: Rejected by author: violates the rule that the clock never learns about key (brief D2).
+*   **Cons**: tempo moves with the key (−2 semitones = 11 % slower); the element's rate would differ from the user's chosen tempo, and `PlaybackEngine.setRate` (the single tempo authority, with its glide against fresh media reports) would be fighting a second writer.
+*   **Reason for Rejection**: Rejected by author: the feature is "key without tempo change"; this alternative is "tempo change".
 
 ### Alternative B: Hand-written WSOLA/granular worklet
 
-*   **Pros**: no dependency; smaller download; tunable for small shifts.
-*   **Cons**: largest DSP work in the app's history with no quality baseline; two algorithms to maintain if a heavy one is added for big shifts.
-*   **Reason for Rejection**: Rejected by author for this release; the `PitchShifter` interface keeps it possible later (brief D9).
+*   **Pros**: no dependency; ~5 KB; tunable for small shifts.
+*   **Cons**: the largest piece of DSP in the app with no quality baseline; polyphonic music (a full backing track) is where granular shifters sound worst; weeks of tuning.
+*   **Reason for Rejection**: Rejected by author for this release; SoundTouch is a 20-year-old algorithm with a maintained worklet port and a documented `MediaElementSource` path.
 
-### Alternative C: Disable scoring, demo and guide while key ≠ 0
+### Alternative C: Other libraries (Rubber Band WASM, Tone.js `PitchShift`, legacy `soundtouchjs` 0.3.0)
+
+*   **Pros**: Rubber Band has the best quality; Tone.js is widely used; legacy soundtouchjs is the same algorithm.
+*   **Cons**: Rubber Band is GPL (or a commercial licence) and ~400 KB WASM; Tone.js `PitchShift` is a granular effect with audible warble on music and pulls in the whole library; legacy `soundtouchjs` is LGPL-2.1, 1.8 MB unpacked, ScriptProcessor-based (deprecated, main-thread audio).
+*   **Reason for Rejection**: Rejected by author: licence (Rubber Band, legacy soundtouchjs for store builds), quality on music (Tone.js), deprecated API (legacy).
+
+### Alternative D: Disable scoring, demo and guide while key ≠ 0
 
 *   **Pros**: no changes to scoring or synths.
 *   **Cons**: a correct singer at key −2 is scored two semitones off, or loses scoring entirely.
-*   **Reason for Rejection**: Rejected by author: transposition is an integer add on MIDI notes (brief D3).
+*   **Reason for Rejection**: Rejected by author: transposition is an integer add on MIDI notes behind one accessor; the alternative punishes correct singers.
 
-### Alternative D: Queue as a list of object URLs with one element per song
+### Alternative E: One persistent `<video>` element for every file
 
-*   **Pros**: simplest to write.
-*   **Cons**: several live URLs and decoded buffers on a phone; one `MediaElementSource` + vocal chain per element leaks until GC; per-element state (key, level) drifts across songs.
-*   **Reason for Rejection**: Rejected by author: File handles are lazy and one shared element keeps a single graph (brief D5).
+*   **Pros**: one element for the whole set regardless of kind; one chain forever.
+*   **Cons**: changes the default path for every MP3 user (a `<video>` element with hidden surface); the stated memory benefit is weak since `mediaSources` is a `WeakMap`.
+*   **Reason for Rejection**: Rejected by author: the real need is iOS element activation across advances, which keying the element by kind already gives for same-kind sets; mixed-kind sets take the tap fallback.
 
-### Alternative E: Intro as a separate overlay + timer system
+### Alternative F: A play gate inside `PlaybackEngine`
 
-*   **Pros**: no change to the session.
-*   **Cons**: duplicates `CountIn` and `SectionCard`; produces two countdowns; cannot be cancelled by Pause/Seek cleanly.
-*   **Reason for Rejection**: Rejected by author: a pre-roll phase in `SongFlow` reuses both and has a transition table (brief D6).
+*   **Pros**: the intro delay lives next to `onBeforePlay`.
+*   **Cons**: adds `playToken`/`pendingPlay`/`gated` to the one component every consumer depends on; every reader of `playingFlag` (toggle, Space, `k`, ThumbBar) breaks while gated; the engine learns about sets.
+*   **Reason for Rejection**: Rejected by author: one App boolean plus the existing `engine.play()` does the same with no engine change.
 
-### Alternative F: Sixth thumb-bar target
+### Alternative G: Sixth thumb-bar target or stacked half-height switches
 
-*   **Reason for Rejection**: Rejected by author: fails the verified 320 px / 44 px layout (brief D4, D11).
+*   **Pros**: Restart stays where it is.
+*   **Cons**: six targets at 320 px are < 44 px each; half-height switches fail the same check.
+*   **Reason for Rejection**: Rejected by author: fails the 320 px / 44 px layout verified in the QA audit; Restart is seek-to-zero and belongs in the seek row.
 
 --------------------------------------------------------------------------------
 
 ## Non-Functional Requirements
 
-*   **Performance**: no audio underruns for 10 minutes on the Q1 device with key −2, vocals off, mic on; the worklet reports its process-time EMA via its port at ~1 Hz into the diagnostics; if the EMA exceeds 70 % of the 128-frame quantum budget, the shifter auto-bypasses with a notice "Key change paused — this device can't keep up". Bundle growth ≤ 80 KB gzipped (SoundTouch worklet + node), loaded lazily on the first non-zero key.
-*   **Latency**: shifter latency compensated as a constant (G2 tolerance 30 ms).
-*   **Memory**: one media element for the whole set; ≤ 8 entries; File handles only.
-*   **Security & privacy**: no persistent storage; diagnostics export contains no lyrics, file names or audio; the worklet is first-party hosted under `/assets/`.
-*   **Rollout & rollback**: each slice behind its flag; rollback = flip the flag and redeploy (Vercel instant rollback also works); native shells keep `KEY` off until device-tested. `registerType: 'autoUpdate'` means the web picks up the change on next load.
+*   **Performance**: no audible dropouts for 10 minutes on the owner's Android at key −2, vocals off, mic on (Q1, manual). Bundle growth ≤ 25 KB gzipped on the main chunk (the node module) and one 17 KB gzipped processor file, both loaded lazily on the first non-zero key.
+*   **Latency**: shifter delay compensated through `frame.lead`; G2 tolerance 30 ms (owner-accepted, unconfirmed until Q3).
+*   **Memory**: one object URL at a time; ≤ 8 `File` handles; one media element per kind.
+*   **Security & privacy & licensing**: no persistent storage; the worklet is first-party hosted under `/assets/`; MPL-2.0 is file-level copyleft and compatible with store distribution — `THIRD_PARTY.md` carries the notice and the README's "no runtime dependencies beyond React" line becomes "beyond React and, for the key change, the SoundTouch audio worklet (MPL-2.0), loaded only when you change the key".
+*   **Rollout & rollback**: Vocals and the set ship on the web with the next deploy and roll back by redeploying the previous commit (Vercel keeps every deployment). Key is off until `VITE_FEATURE_KEY=1` is set in Vercel and the spike plus Q1 pass; native shells ship Key only in a later store release.
 
-### Risks and Mitigations
+## Risks and Mitigations
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Worklet CPU overrun on low-end phones (Q1) | Medium | Audible glitches | Lazy insert only at key ≠ 0; process-time counter with auto-bypass + notice; `KEY` flag off in native shells until measured |
-| Shifter latency mis-measured → lyrics early/late at key ≠ 0 (Q3) | Medium | Sync off by 20–60 ms | Measured constant + fixture; Tap to sync still available; key 0 path unchanged |
-| `preservesPitch` toggling double-shifts or is unsupported (old Safari uses `webkitPreservesPitch`) | Low | Wrong pitch at key ≠ 0 | Set both properties; capability check hides Key when the worklet cannot register; browser matrix in Phase 5 |
-| Vocal leaks when the shifter runs before the chain | — | — | Not possible: order fixed chain → shifter; residual-vocal fixture at key 0 and −2 |
-| iOS blocks `play()` on advance without a gesture (Q2) | Medium | Set stalls after song 1 on iPhone | Same element + running context; device check in Phase 4; fallback: countdown waits for a tap on iOS |
-| Stale File handle (user deleted the file) | Low | Song fails to load | `media_error` → entry `status: "error"` with a note; queue advances on "Next" |
-| Worklet file not served (rewrite/precache) | Low | Key silently unavailable | `?url` import under `/assets/`; build check that `dist/assets/soundtouch-processor-*.js` exists and is in the precache manifest |
-| `App.tsx` grows past 1000 lines | High without refactor | Maintainability | `SongQueue`, `SongFlow`, `Diagnostics` are engine modules; App must be net-neutral or shorter (checked in Phase 2 gate) |
-| Playwright flows outside the repo rot | High | No regression gate | Phase 0 moves the needed flows into `scripts/flows/` |
+| Worklet CPU overrun on the phone (Q1) | Medium | Audible glitches | Shifter inserted only at key ≠ 0; flag off until the device run passes; manual "0" resets the key |
+| Shifter latency mis-measured or rate-dependent (Q3) | Medium | Lyrics early/late by 10–60 ms at key ≠ 0 | Click test at three rates in the spike; per-rate table if the spread > 10 ms; Tap to sync still available; key 0 path unchanged |
+| `preservesPitch` unsupported or double-corrected | Low | Wrong pitch at key ≠ 0 | Spike measures pitch error in cents at three rates; set both property names; status `unavailable` hides the control |
+| iOS blocks `play()` from the card's timer (Q2) | Medium | Set stalls after the first song on iPhone | Prime inside the tap; "Tap to start" fallback on rejection; device check in Phase 4 |
+| Stale `File` handle (file deleted) | Low | Song fails to load | Media `error` → notice "Couldn't open <title>" with Next/End set still available |
+| Processor file not served or not precached | Low | Key unavailable | `?url` import under `/assets/`; build check that `dist/assets/soundtouch-processor-*.js` exists and is in the precache manifest |
+| `App.tsx` keeps growing | Medium | Maintainability | Rule: no new App state beyond `keyOffset`, `introActive` and the hook; set and intro logic in `useSongSet.ts` and `IntroCard.tsx` |
+| Browser flows live outside the repo | Certain today | No regression gate | Step 0 commits them under `scripts/flows/` with fixtures and a runner |
+| Supply chain: new npm dependency | Low | Compromised processor runs on the audio thread | Exact version pin (`2.1.1`, no caret), lockfile, `THIRD_PARTY.md`, no network access from the worklet |
 
-### Tolerances
+## Tolerances
 
 | Quantity | Tolerance | How checked |
 |---|---|---|
-| Lyric time vs audible position at key ≠ 0 | ≤ 30 ms | fixture using `SHIFTER_LATENCY_S`; flow test asserts highlight vs analyser onset |
-| Lyric time at key 0 | unchanged (0 ms added) | shifter absent; existing verify flows |
-| Key 0 analyser levels vs today | ≤ 0.5 dB | flow test compares `--energy` before/after the change |
-| Residual vocal after chain at key −2 vs key 0 | ≤ 3 dB difference | fixture on a synthetic centre tone |
+| Lyric time vs audible position at key ≠ 0 | ≤ 30 ms at 0.5×, 1×, 2× | spike click test; `lyricTime` fixture with `frame.lead` |
+| Lyric time at key 0 | unchanged (lead = 0) | existing flows unchanged against `BASELINE.md` |
+| Pitch error after shifting (spike) | ≤ 15 cents at −2 and +2, at 0.5×, 1×, 2× | FFT peak of an A440 fixture in headless Chromium |
+| Key 0 analyser levels vs today | ≤ 0.5 dB | flow compares `--energy` on `beat.wav` at 2 s before/after |
+| Residual vocal after chain at key −2 vs key 0 | ≤ 3 dB difference | synthetic centre-tone fixture through chain+shifter |
 | Semitone ratio | 2^(n/12) ± 1e-9 | fixture |
-| Thumb-bar targets | ≥ 44 px, five targets at 320 px | existing `verify-layout` flow |
-| Worklet process time | ≤ 70 % of quantum (auto-bypass above) | diagnostics counter |
-| Intro countdown | 3 beats of the track's BPM (fallback 90 bpm), skippable ≤ 100 ms after tap | flow test |
-| Queue size | ≤ 8 entries | fixture |
+| Thumb-bar targets | 5 targets ≥ 44 px at 320 px | `verify-layout` flow |
+| Intro countdown | 3 × `timeline.beat`; skip reacts ≤ 100 ms | `verify-set` flow |
+| Set size | ≤ 8 entries | fixture |
 
 --------------------------------------------------------------------------------
 
 ### Additional Resources
 
-*   `concepts_brief.md`, `feature_concept.md`, `lenses/*.md` (this folder)
+*   `concepts_brief.md`, `feature_concept.md`, `lenses/*.md`, `reviews/*.md`, `consolidated_review_report.md`, `goldfish_review_report.md` (this folder)
 *   `lyricglow/docs/qa-audit-2026-10-18.md` (layout and target-size baseline)
-*   `@soundtouchjs/audio-worklet` README (register, `pitchSemitones`, `playbackRate` mirror, `preservesPitch = false`)
+*   `@soundtouchjs/audio-worklet` 2.1.1 README ("With an HTML audio element" section)
 
 ### Future Improvements
 
-*   **Lyrics auto-match for queued files**: fill `SongEntry.track` from LRCLIB using the file name as a background enrichment.
-*   **Hand-written shifter**: replace `SoundTouchShifter` behind `PitchShifter` for smaller downloads.
-*   **Apply key to all**: one tap in the queue list.
+*   **Lyrics auto-match for set entries**: fill `SetEntry.track` from LRCLIB using the file name.
+*   **Per-rate latency table** if Q3 shows the delay depends on rate.
+*   **Apply key to all**: one tap in the set list.
 
 --------------------------------------------------------------------------------
 
 ## Detailed Implementation Plan
 
-Conventions: repo root for paths is `lyricglow/`. Every phase ends with the gate `npx tsc -b && npx eslint . && npm run build && npm run check:model && node scripts/flows/<flow>.mjs` (flows run against `VITE_YT_API_KEY=testkey-ABC123 npx vite --port 5173 --strictPort`). Commit after each green phase. No file outside the lists below is modified in that phase.
+Conventions: paths are relative to `lyricglow/`. The gate after every phase is `npx tsc -b && npx eslint . && npm run build && npm run check:model && npm run flows` (flows start `VITE_YT_API_KEY=testkey-ABC123 npx vite --port 5173 --strictPort` themselves and mock LRCLIB, YouTube and `/api/recognize` locally). Commit after each green phase. A phase modifies only the files it lists.
 
 ### Step −1: Confirm the newest source
-*   `git fetch origin claude/lyricglow-karaoke-app-ugIUj && git status` → HEAD must be `c6c0951` or a descendant with a clean tree; `npm ci`; run the full gate once to record the baseline.
+*   `git status` clean on `claude/lyricglow-karaoke-app-ugIUj`, HEAD a descendant of `c6c0951`; `npm ci`.
 
-### Step 0: Baseline and backup
-*   `git branch backup/pre-karafun-set` at HEAD.
-*   Copy the scratchpad flows `verify-layout.mjs`, `verify-karafun.mjs`, `verify-phase2.mjs`, `verify-vocal-yt.mjs`, `verify-mic.mjs`, `verify-guide.mjs`, `probe-clock.mjs` into `scripts/flows/` (paths rewritten to `scripts/flows/fixtures/` for `beat.wav`, `stereo.wav`, `mic220.wav`, which are copied too). Add `npm run flows` that runs them in sequence. Record their output as `scripts/flows/BASELINE.md`.
-*   Add `scripts/flows/README.md` (how to start the dev server, flags used).
+### Step 0: Flows into the repo (Create)
+*   `package.json`: add `playwright` as a dev dependency (the sandbox's `/opt/node22/lib/node_modules/playwright` is used locally; the dependency makes `npm run flows` work elsewhere), scripts `"flows": "node scripts/flows/run.mjs"`.
+*   `scripts/flows/run.mjs`: starts the dev server, runs every `verify-*.mjs` in sequence, prints pass/fail, exits non-zero on failure.
+*   `scripts/flows/lib.mjs`: shared helpers (launch, mocks for LRCLIB/YouTube/recognize, `--energy` reader, upload helper).
+*   `scripts/flows/verify-layout.mjs`, `verify-karafun.mjs`, `verify-phase2.mjs`, `verify-vocal-yt.mjs`, `verify-mic.mjs`, `verify-guide.mjs`: rewritten from the session scratchpad with their current assertions; fixtures `scripts/flows/fixtures/beat.wav`, `stereo.wav`, `mic220.wav`.
+*   `scripts/flows/BASELINE.md`: the recorded output at Step 0 (energy values, target sizes). Rule: later phases compare against it; a changed number needs a sentence in the phase's commit message.
+*   `scripts/flows/README.md`: how to run, what is mocked.
+*   **Gate**: full gate green; this is the baseline.
 
-### Phase 1 — Vocals switch + Restart to the seek row (flag `VITE_FEATURE_VOCALS_SWITCH`)
+### Phase 1 — Vocals switch, Restart to the seek row
 
-#### 1. `src/featureFlags.ts` (Create)
-*   **Type / Scope**: TypeScript module.
-*   **Proposed Changes**: `export const FLAGS = { vocalsSwitch: read("VITE_FEATURE_VOCALS_SWITCH", true), key: read("VITE_FEATURE_KEY", true), queue: read("VITE_FEATURE_QUEUE", true) }` where `read(name, def)` returns `import.meta.env[name] === "0" ? false : import.meta.env[name] === "1" ? true : def`, and in `import.meta.env.DEV` a `?feature=key,queue` / `?nofeature=…` query overrides.
+#### 1. `src/components/VocalsSwitch.tsx` (Create)
+*   props `{ on: boolean; disabledReason: string | null; onToggle(): void }`; markup mirrors `MicSwitch` (`role="switch"`, `aria-checked`, knob, "ON/OFF", caption "Vocals" / "Vocals off" / `disabledReason`), `disabled` + `aria-disabled` when a reason is set; `data-testid="vocals-toggle"`, `vocals-state` readout `on | off | unavailable`. New `IconVoice` glyph in `Icons.tsx`.
+#### 2. `src/components/ThumbBar.tsx` (Modify) — slot 2 renders `VocalsSwitch`; the Restart item is removed; new props `vocals: { on, disabledReason }`, `onToggleVocals`.
+#### 3. `src/components/ProgressRow.tsx` (Modify) — `<button className="seek-restart" data-testid="btn-restart" aria-label="Restart">` (44 px) before the current-time label, calling `engine.restart()`.
+#### 4. `src/App.tsx` (Modify) — `lastVocalLevel` ref; `toggleVocals`; the slider's setter updates the ref when > 0; `vocals = { on: vocalLevel > 0, disabledReason }` where the reason is "Mono file — can't separate vocals" when `vocalMono === true`, "Local files only" when the source is not a file, else `null` (a `null` verdict counts as stereo).
+#### 5. `src/styles.css` (Modify) — `.vocals-switch*` from `.mic-switch*` with the gold accent for ON; `.seek-restart` 44 px round inside `.progress-row`; landscape keeps the row ≤ 56 px.
+#### 6. `scripts/flows/verify-vocals.mjs` (Create) — stereo file → `on`; tap → `off`, `vocal-level` 0; tap → 35; slider 60, toggle off/on → 60; mono fixture → `unavailable` with the mono string; demo → "Local files only"; YouTube mock → "Local files only"; five thumb targets ≥ 44 px at 320 px; `btn-restart` in the seek row resets the seek value to 0.
+#### 7. `README.md` (Modify) — Vocals row in the controls table.
+*   **Gate**: full gate; `verify-layout` and `verify-mic` unchanged vs `BASELINE.md`.
 
-#### 2. `src/components/VocalsSwitch.tsx` (Create)
-*   **Proposed Changes**: props `{ on: boolean; disabledReason: string | null; onToggle(): void }`. Markup mirrors `MicSwitch` (`role="switch"`, `aria-checked`, knob with an `IconVoice` (new icon in `Icons.tsx`: a head/singer glyph), "ON/OFF" text, caption "Vocals" / "Vocals off"; when `disabledReason` is set: `disabled`, `aria-disabled`, caption shows the reason). `data-testid="vocals-toggle"`, state readout `data-testid="vocals-state"` with values `on | off | unavailable`.
+### Phase 2 — Key change (flag `VITE_FEATURE_KEY`)
 
-#### 3. `src/components/ThumbBar.tsx` (Modify)
-*   **Proposed Changes**: new props `vocals: { on: boolean; disabledReason: string | null } | null`, `onToggleVocals`. When `vocals` is non-null render `VocalsSwitch` in slot 2; otherwise render the Restart item as today. Pass `showRestart={vocals !== null}` to `ProgressRow`.
+#### 2a. Spike (go/no-go)
+#### 8. `package.json` (Modify) — `"@soundtouchjs/audio-worklet": "2.1.1"` (exact); `THIRD_PARTY.md` (Create) with the MPL-2.0 notice; `README.md` dependency sentence.
+#### 9. `scripts/spike/key-spike.html` + `scripts/spike/key-spike.mjs` (Create)
+*   Headless Chromium page: `fixtures/a440.wav` (2 s sine at 440 Hz) through `MediaElementSource → SoundTouchNode → analyser`, `preservesPitch = false`, rate ∈ {0.5, 1, 2} mirrored, `pitchSemitones` ∈ {−2, 0, +2}; FFT peak → error in cents. `fixtures/click.wav` (single impulse) through the chain with and without the node; cross-correlate analyser time-domain captures → delay in ms per rate. Prints a table. Also run once in Firefox (Playwright) for the pitch part.
+*   **Exit criteria**: pitch error ≤ 15 cents in all nine cells; delay spread across rates ≤ 10 ms (else per-rate table); no dropouts in a 60 s desktop run. **If it fails**: remove the dependency, ship Key for the demo track only (steps 12–15 without 10–11), record the result in `goldfish_review_report.md`, and continue with Phase 3. Vocals and the set ship regardless.
+#### 2b. Implementation (only if 2a passes)
+#### 10. `src/engine/SoundTouchShifter.ts` (Create) — as in the architecture section; `SHIFTER_LATENCY_S` (or the per-rate table) with the spike's numbers and date.
+#### 11. `src/engine/AudioGraph.ts` (Modify) — `setKey(el, n): Promise<void>` (insert/remove with crossfade, analyser re-point, `preservesPitch` handling); `mirrorRate(el, r)`; `keyStatus(el)`; `outputLatency(el)`.
+#### 12. `src/engine/PlaybackEngine.ts` (Modify) — `setOutputLatency(s)`; `frame.lead` computed each frame (`Frame` gains `lead: number`, 0 by default).
+#### 13. `src/model/timeline.ts` (Modify) — `lyricTime(frame, track)`; `setKeyOffset`, `noteOf` on `TrackTimeline`. Readers switched: `Karaoke.tsx`, `SpectrumCanvas.tsx`, `PitchLane.tsx`, `GuideSynth.ts`, `DemoSynth.ts`, `KaraokeSession.ts`, `PitchTracker.ts` (`setLead`), `model/sync.ts` (signature takes the frame), `scoring.ts` (note passed in).
+#### 14. `src/components/MoreSheet.tsx` (Modify) — Key row; `src/components/KeyPill.tsx` (Create); `src/featureFlags.ts` (Create).
+#### 15. `src/App.tsx` (Modify) — `keyOffset` state; `effectiveKey`; `graph.setKey` + `graph.mirrorRate` effects; `engine.setOutputLatency(graph.outputLatency(el))`; `timeline.setKeyOffset(effectiveKey)`; `tracker.setLead`.
+#### 16. `scripts/check-model.ts` (Modify) — `semitoneRatio`; `noteOf` with and without a note; `lyricTime` with lead at three rates; `scoreSyllable` with a transposed note.
+#### 17. `scripts/flows/verify-key.mjs` (Create) — build served with `VITE_FEATURE_KEY=1`: stereo file → "−" twice → `key-value` "−2", `key-status` "on", `key-pill` visible, `audio.preservesPitch === false`, `--energy` > 0; "0" → status "off", `preservesPitch === true`, energy within 0.5 dB of baseline; rate 2× with key −2 → highlight vs `audio.currentTime − lead` drift ≤ 30 ms over 10 s; processor route 404 → status "not available", audio still plays; YouTube mock → "Local files and the demo only".
+#### 18. `vite.config.ts` (Modify) — small plugin asserting the processor chunk is emitted under `assets/`; `docs/mobile-apps.md` — Key flag note and the Q1 checklist.
+*   **Gate**: full gate with the flag off (baseline unchanged) and on (`verify-key`); the spike table pasted into `goldfish_review_report.md`. Q1 device run is manual and recorded there before the flag is turned on in Vercel.
 
-#### 4. `src/components/ProgressRow.tsx` (Modify)
-*   **Proposed Changes**: prop `showRestart?: boolean`; when true render `<button className="seek-restart" data-testid="btn-restart" aria-label="Restart" onClick={() => engine.restart()}><IconRestart/></button>` before the current-time label. The testid `btn-restart` therefore exists in exactly one place at a time.
+### Phase 3 — Song set hook and element reuse (no visible change)
 
-#### 5. `src/App.tsx` (Modify)
-*   **Proposed Changes**: replace `const [vocalLevel, setVocalLevel] = useState(0.35)` with `const [vocalLevel, setVocalLevel] = useState(0.35); const lastVocalLevel = useRef(0.35);` and `const toggleVocals = () => setVocalLevel(v => { if (v > 0) { lastVocalLevel.current = v; return 0; } return lastVocalLevel.current || 0.35; })`; `setVocalLevel` from the slider also updates `lastVocalLevel` when > 0. Compute `vocals = FLAGS.vocalsSwitch && media && playback.sourceKind === "media" ? { on: vocalLevel > 0, disabledReason: vocalMono ? "Mono file" : null } : null`. Add hotkey `v` → `toggleVocals` when `vocals` is non-null.
+#### 19. `src/hooks/useSongSet.ts` (Create) — as in the architecture section, with the pure helpers.
+#### 20. `src/components/MediaElement.tsx` (Modify) — `src` effect → `engine.mediaSourceChanged()`; `src/engine/PlaybackEngine.ts` (Modify) — `mediaSourceChanged()`.
+#### 21. `src/App.tsx` (Modify) — `<MediaElement key={media.mediaKind}>`; derive source/track from `set.current` when a set is active.
+#### 22. `scripts/check-model.ts` (Modify) — `addEntry` cap (9th → `{ ok: false }`), `removeEntry` of the current entry, `nextIndex` at the end.
+*   **Gate**: full gate; all Step 0 flows unchanged vs `BASELINE.md`; a fixture asserts `revokeObjectURL` is called once per `next()` (injected URL factory).
 
-#### 6. `src/styles.css` (Modify)
-*   **Proposed Changes**: `.vocals-switch*` rules cloned from `.mic-switch*` with the gold accent (`--gold`, `--gold-glow`) for the on state; `.seek-restart { width: 44px; height: 44px; border-radius: 50%; … }` inside `.progress-row`; landscape (`max-height: 520px`) keeps the row within 56 px.
+### Phase 4 — Intro card
 
-#### 7. `scripts/flows/verify-vocals.mjs` (Create)
-*   **Proposed Changes**: stereo file → `vocals-state` on, tap → off and `vocal-level` reads 0, tap → on reads 35; slider to 60 then toggle off/on → 60; mono file → `unavailable` with the caption "Mono file"; YouTube mock → slot shows `btn-restart`, no `vocals-toggle`; five thumb targets ≥ 44 px at 320 px; `btn-restart` in the seek row works (seek value resets to 0).
+#### 23. `src/components/IntroCard.tsx` (Create) — as in the UI section; countdown = 3 × `timeline.beat` via `setTimeout` per beat.
+#### 24. `src/App.tsx` (Modify) — `introActive`; `startSet`/`nextSong` with the iOS prime; `skipCountInGeneration`; Pause/Seek/Restart clear the card; `Karaoke.tsx` (Modify) — `suppressFirstCountIn` prop.
+#### 25. `scripts/flows/verify-intro.mjs` (Create) — set of one → Start set → `intro-card` visible, audio paused, seek 0 → after 3 beats audio plays and the card is gone and no line-0 dots appear; Start again → `intro-skip` → plays ≤ 100 ms; Pause during the intro cancels; single-file Play (no set) → no card.
+*   **Gate**: full gate + `verify-intro`. **Q2 device check** on the owner's iPhone (PWA): two-song set, song 2 starts without a tap; if not, the fallback card appears.
 
-#### 8. `README.md` (Modify) — Vocals row.
+### Phase 5 — Set UI and grade screen
 
-**Gate**: full gate + `verify-vocals.mjs` + `verify-layout.mjs` + `verify-mic.mjs`.
-
-### Phase 2 — SongEntry / SongQueue / SongFlow refactor with no visible change (no flag; behaviour-preserving)
-
-#### 9. `src/engine/SongQueue.ts` (Create)
-*   **Proposed Changes**: as in the architecture section. Pure methods take and return snapshots; `createObjectURL`/`revokeObjectURL` go through an injected `urlFactory` so fixtures can count calls. Snapshot: `{ entries: SongEntry[]; currentId: string | null; cap: 8 }`. Exports pure helpers `addEntry`, `removeEntry`, `moveEntry`, `advanceIndex`, `seedSettings(prev, next)` for fixtures.
-
-#### 10. `src/engine/SongFlow.ts` (Create)
-*   **Proposed Changes**: `type Phase = "idle" | "intro" | "playing" | "finished" | "grade" | "advancing"`; `reduce(state, event): state` with the transition table:
-    idle —start→ intro (file source with queue) | playing (otherwise); intro —skipIntro|countdownDone→ playing; intro —pause|seek|sourceChanged→ idle; playing —mediaEnded→ finished; finished —gradeShown→ grade; grade —next→ advancing; grade —singAgain→ playing; grade —endSet→ idle; advancing —start→ intro; any —sourceChanged→ idle. Illegal events are ignored (state unchanged) and logged to diagnostics.
-
-#### 11. `src/engine/Diagnostics.ts` (Create)
-*   **Proposed Changes**: `log(kind: string, data?: Record<string, unknown>)` into a 200-entry ring; `snapshot()`; `exportJson(meta)`.
-
-#### 12. `src/engine/PlaybackEngine.ts` (Modify)
-*   **Proposed Changes**: add `setPlayGate(fn: (() => Promise<void> | void) | null)`; `play()` becomes: `if (ended) seek(0); onBeforePlay?.(); const gate = this.playGate; if (gate) { this.pendingPlay = ++this.playToken; void Promise.resolve(gate()).then(() => { if (this.pendingPlay === token) this.startTransport(); }); } else this.startTransport();` where `startTransport()` is today's body after `onBeforePlay`. `pause()`/`seek()` bump `playToken` so a cancelled gate does not start playback. Snapshot gains `gated: boolean`.
-
-#### 13. `src/hooks/useSongQueue.ts` (Create)
-*   **Proposed Changes**: `useSyncExternalStore` over a `SongQueue` instance; returns `{ queue, snapshot, current }`.
-
-#### 14. `src/App.tsx` (Modify)
-*   **Proposed Changes**: introduce `setCurrentSong(entry)`; `handleFileUpload`, `pickSynced`, `handleImportFile`, `applyStudioTrack`, `clearSource` call it (a file upload creates a one-entry queue with `status: "current"`; a lyrics load updates `current.track`). The object-URL effect is deleted; `SongQueue` owns the URL. `MediaElement` is rendered with `key="backing"` and `src={current.url}` so the element is reused. Net line count of `App.tsx` must not exceed 719.
-
-#### 15. `src/components/MediaElement.tsx` (Modify)
-*   **Proposed Changes**: when `src` changes on the same element: `el.src = src; el.load()`; `engine.attachMedia(el)` only once per element.
-
-#### 16. `scripts/check-model.ts` (Modify)
-*   **Proposed Changes**: fixtures: `addEntry` respects the cap (9th returns `{ok:false}`); `removeEntry` of current advances; `moveEntry` bounds; `advanceIndex` + `seedSettings` carries key, resets rate to 1, carries vocalLevel; every `SongFlow` transition in the table and three illegal ones; `PlaybackEngine` play gate: play with a pending gate does not start the transport until resolved, and pause before resolution cancels it.
-
-**Gate**: full gate + all Phase 0 flows unchanged (compare with `BASELINE.md`).
-
-### Phase 3 — Intro card and flow (flag `VITE_FEATURE_QUEUE` gates the card for single songs too)
-
-#### 17. `src/components/IntroCard.tsx` (Create)
-*   **Proposed Changes**: props `{ title, artist, index, total, keyOffset, beats: number, onSkip }`; renders in the cue slot with `SectionCard` styling + `CountIn variant="dots"` fed from a local 3-beat countdown driven by `setInterval(60/bpm)`; `role="status"`, `aria-label="Up next: <title>"`, `data-testid="intro-card"`, `intro-countdown` readout; a full-stage transparent button `intro-skip` ("Skip intro").
-
-#### 18. `src/App.tsx` (Modify)
-*   **Proposed Changes**: `SongFlow` state via `useReducer`; install `engine.setPlayGate` while `phase === "intro"` and the source is a file (gate resolves on `countdownDone` or `skipIntro`); render `IntroCard` in `.cue-slot` during `intro`; suppress `CountIn` while the intro is shown (the first line's count-in is replaced, per D6); YouTube/Listen: card without countdown and no gate.
-
-#### 19. `scripts/flows/verify-intro.mjs` (Create)
-*   **Proposed Changes**: file + lyrics → Play → `intro-card` visible, audio element still paused, seek bar at 0 → after 3 beats audio plays and `intro-card` gone; Play again → tap `intro-skip` → plays within 100 ms; Pause during intro cancels (no play after the countdown); YouTube mock → card shown, player started immediately.
-
-**Gate**: full gate + `verify-intro.mjs` + Phase 0 flows.
-
-### Phase 4 — Queue UI and set flow (flag `VITE_FEATURE_QUEUE`)
-
-#### 20. `src/components/QueuePanel.tsx` (Create)
-*   **Proposed Changes**: rendered as the first section of `SongPanel` when the flag is on: list (`queue-item-i`, `queue-up-i`, `queue-down-i`, `queue-remove-i`), "Add song" (`queue-add`: opens the file picker, then focuses the lyrics search with a "for: <file name>" caption; the next `Use` adds the entry), "Start set" (`queue-start`), "Song N of M" (`queue-position`), a note "Your queue lives in this tab only — reloading clears it", a full-queue message.
-
-#### 21. `src/components/GradeScreen.tsx` (Modify)
-*   **Proposed Changes**: props `nextTitle?: string; onNext?: () => void; onEndSet?: () => void`; buttons: `btn-next` (primary, auto-focus) when `nextTitle`, `btn-sing-again`, `btn-end-set`.
-
-#### 22. `src/App.tsx` (Modify)
-*   **Proposed Changes**: wire `queue.advance()` → `setCurrentSong(next)` → `flow start` (intro); `singAgain` → `queue.singAgain()`; `endSet` → `queue.endSet()` (keeps the last song loaded). Media `error` event → `entry.status = "error"` + notice.
-
-#### 23. `scripts/flows/verify-queue.mjs` (Create)
-*   **Proposed Changes**: add three songs (mocked LRCLIB) → positions, move/remove, cap at 8 (message), Start set → intro 1 → simulate end (seek to end) → `btn-next` reads "Next: <title 2>" → tap → intro 2 shows "Key −2" after setting key −2 on song 1 (Phase 5 flag on) → … → after song 3 `btn-end-set`; only one `<audio>` element exists throughout; `URL.revokeObjectURL` called exactly once per advance (stubbed).
-
-**Gate**: full gate + `verify-queue.mjs` + `verify-intro.mjs` + Phase 0 flows. **Device check (Q2)** on an iPhone (PWA) before the flag defaults on in `build:native`.
-
-### Phase 5 — Key change (flag `VITE_FEATURE_KEY`)
-
-#### 24. `package.json` (Modify) — add `@soundtouchjs/audio-worklet@^2.1.1` (MPL-2.0; add a `THIRD_PARTY.md` note).
-
-#### 25. `src/engine/PitchShifter.ts` (Create)
-*   **Proposed Changes**: interface `{ status: "idle"|"loading"|"active"|"bypassed"|"failed"; reason?: string; node: AudioNode | null; setSemitones(n: number): void; setRate(r: number): void; latencySeconds: number; dispose(): void }`; `SoundTouchShifter` implementing it with `import processorUrl from "@soundtouchjs/audio-worklet/processor?url"`, `SoundTouchNode.register(ctx, processorUrl)` once per context (cached promise), `node.pitchSemitones.value`, `node.playbackRate.value`; process-time EMA read from the node's port message if provided, else measured via `ctx.currentTime` drift; `latencySeconds = SHIFTER_LATENCY_S`.
-
-#### 26. `src/engine/AudioGraph.ts` (Modify)
-*   **Proposed Changes**: per-element `stages` record; `setKey(el, semitones): Promise<void>` inserts/removes the shifter with a 30 ms crossfade and moves the analyser tap after it; sets `el.preservesPitch = el.webkitPreservesPitch = false` while present, `true` on removal; `mirrorRate(el, r)` called from `App` on every rate change; `outputLatencyFor(el)`; `keyStatus(el)`; every catch logs to `Diagnostics`.
-
-#### 27. `src/engine/KaraokeSession.ts` (Modify) — `setLatency(s)`; `onFrame` uses `t = f.time + offset − latency`.
-#### 28. `src/engine/scoring.ts` (Modify) — `scoreSyllable(..., keyOffset = 0)`; `pitchClassDistance(s.midi, syl.note + keyOffset)`; fixture.
-#### 29. `src/components/PitchLane.tsx`, `src/engine/DemoSynth.ts`, `src/engine/GuideSynth.ts` (Modify) — `keyOffset` prop/setter; `note + keyOffset`.
-#### 30. `src/components/MoreSheet.tsx` (Modify) — "Key & speed" section with the stepper (`key-minus`, `key-value`, `key-plus`, `key-reset`), disabled reason text; `src/components/KeyBadge.tsx` (Create) in the toast stack.
-#### 31. `src/App.tsx` (Modify) — `keyOffset` from `current.settings.key`; `graph.setKey(el, key)` + `graph.mirrorRate` on rate change; `session.setLatency(graph.outputLatencyFor(el))`; hotkeys `-`/`=` for key.
-#### 32. `scripts/check-model.ts` (Modify) — `semitoneRatio(n) = 2^(n/12)`; transposition in `scoreSyllable`; latency subtraction in a synthetic session frame.
-#### 33. `scripts/flows/verify-key.mjs` (Create)
-*   **Proposed Changes**: stereo file → key −2 → `key-value` "−2", `key-badge` visible, `audio.preservesPitch === false`, a SoundTouch worklet node exists in the graph (exposed via `window.__lg.keyStatus` in dev), analyser `--energy` still > 0, pitch lane bars shifted (DOM attribute `data-note` on bars), guide hum notes two semitones lower (`data-guide-hz` readout); key 0 → node removed, `preservesPitch === true`, `--energy` within 0.5 dB of the Phase 0 baseline; rate 2× with key −2 → lyric highlight vs `audio.currentTime` drift ≤ 30 ms over 10 s; worklet registration forced to fail (route the processor URL to 404) → Key row shows the reason, audio plays.
-#### 34. `scripts/measure-latency.mjs` (Create) — headless Chromium: plays a synthetic click through chain+shifter and chain only, cross-correlates the analyser time-domain output, prints the delay; the result is pasted into `SHIFTER_LATENCY_S` with a comment.
-#### 35. `vite.config.ts` (Modify) — assert in a small plugin that the emitted processor chunk is under `assets/`; `README.md`, `docs/mobile-apps.md` — Key row, flag notes, device-test checklist.
-
-**Gate**: full gate + `verify-key.mjs` + `verify-queue.mjs` + Phase 0 flows; `measure-latency.mjs` run once; **device check (Q1)** on the target phone before `VITE_FEATURE_KEY` defaults on in `build:native`.
+#### 26. `src/components/SongPanel.tsx` (Modify) — the Set section.
+#### 27. `src/components/GradeScreen.tsx` (Modify) — `nextTitle`, `onNext`, `onEndSet`; button order and first focus as specified; `src/hooks/useModalFocus.ts` (Modify) — first-focus selector parameter.
+#### 28. `src/App.tsx` (Modify) — `nextSong` → `set.next()` → `introActive`; `singAgain` unchanged; `endSet` → `set.end()` keeps the last song loaded; media `error` → notice with the entry title.
+#### 29. `src/styles.css` (Modify) — set list, intro card, key pill.
+#### 30. `scripts/flows/verify-set.mjs` (Create) — add three songs (mocked LRCLIB) → `set-position`, remove one and re-add, cap message at 9; Start set → intro 1 → seek to the end → `btn-next` reads "Next: <title 2>" and has focus → tap → intro 2 shows "Key −2" after setting key −2 during song 1 (flag on) → … → after song 3 `btn-sing-again` focused and `btn-end-set` present; exactly one `audio-element` throughout; `revokeObjectURL` stub called once per advance.
+#### 31. `README.md`, `docs/mobile-apps.md` (Modify) — Set and Intro rows; Q2 checklist.
+*   **Gate**: full gate + `verify-set` + `verify-intro` + Step 0 flows.
 
 ### Verification Plan
 
-*   **Compilation/Build**: `npx tsc -b && npm run build` (plus `npm run build:native` in Phase 5 to confirm the worklet chunk is present).
-*   **Unit/fixtures**: `npm run check:model` (new sections: song queue, song flow, play gate, semitone/transposition, latency subtraction).
+*   **Compilation/Build**: `npx tsc -b && npm run build`; `npm run build:native` once after Phase 2 to confirm the processor chunk is present.
+*   **Unit/fixtures**: `npm run check:model` (new sections: set helpers, `noteOf`, `lyricTime`, semitone ratio, transposed scoring).
 *   **Static analysis**: `npx eslint .`.
-*   **E2E**: `npm run flows` (Phase 0 baseline flows + `verify-vocals`, `verify-intro`, `verify-queue`, `verify-key`) against the dev server; all mocks local.
-*   **Manual device checks**: Q1 (Android mid-range, 10 min at key −2), Q2 (iPhone PWA advance without gesture); results recorded in `docs/mobile-apps.md`.
-*   **Production**: deploy to Vercel production only after the owner's go-ahead; confirm `lyricglow.vercel.app` serves the new bundle and `/assets/soundtouch-processor-*.js` returns JavaScript.
+*   **E2E**: `npm run flows` (Step 0 flows + `verify-vocals`, `verify-key`, `verify-intro`, `verify-set`) against the dev server; all mocks are local request routes in `lib.mjs`.
+*   **Spike**: `node scripts/spike/key-spike.mjs` prints the pitch/latency table; pasted into `goldfish_review_report.md`.
+*   **Manual device checks**: Q1 (owner's Android, 10 min at key −2), Q2 (owner's iPhone, two-song set); results recorded in `docs/mobile-apps.md`.
+*   **Production**: deploy only after the owner's go-ahead (G3); then `curl -sI https://lyricglow.vercel.app/assets/soundtouch-processor-<hash>.js` returns `content-type: text/javascript` and the app serves the new commit hash.
 
 --------------------------------------------------------------------------------
 

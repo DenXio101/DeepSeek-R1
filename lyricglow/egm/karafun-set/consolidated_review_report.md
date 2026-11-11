@@ -87,4 +87,37 @@ Failed: none. Raw reports: `reviews/s*.md`.
 
 ## Stage 8 — intermediate zoom-out on this report
 
-(filled in after the stage 8 reviewer reports)
+Reviewer: zoom_out (sonnet, read-only; read this report as data and the Goldfish source tree). Raw report: `reviews/s8-zoom-out.md`. Verdict: "Not yet" — the design solves the root problem but chains three features of very different risk into one dependency, and four of the consolidated fixes collide. After the resolutions below the reviewer judged the design "the simplest workable shape".
+
+### New findings (not raised by stages 5–9)
+
+| # | Finding | Severity |
+|---|---|---|
+| S8-1 | **Key is made dependent on the queue refactor.** `SongEntry.settings {key, rate, vocalLevel}` and Phase 5 behind Phases 2–4 mean the riskiest feature cannot ship until the largest refactor lands. Per D10 key and vocal level carry over and rate resets, so nothing differs per song: they are session state like `vocalLevel` today (`App.tsx:83`). Fix: `keyOffset` in App beside `vocalLevel`; drop `SongEntry.settings`; `advance()` only resets rate; build order Vocals → Key (with spike) → Queue + Intro. | Blocker |
+| S8-7 | **The Key slice has no go/no-go gate and no fallback.** Three unproven assumptions (`preservesPitch = false` + rate mirror behind a `MediaElementSource`; stable group delay; CPU on a phone) are only measured at the end of Phase 5. Fix: spike first (Chrome, Firefox, iOS, Android; pitch error in cents at 0.5×/1×/2×; latency click test); stated exit: if it fails, Key ships demo-only (synth) or is dropped, Vocals and Queue ship regardless. Drop the in-worklet auto-bypass (no `performance.now` in the worklet scope); one manual "Key off" path. | Major |
+| S8-8 | **`SongQueue` class + `SongFlow` reducer is the wrong altitude.** `source`/`track` are plain App states; the design adds a class, snapshot, hook, reducer and `setCurrentSong`. Fix: a minimal `useSongSet` hook `{ entries: {file, track, title}[], index }` owning the one object URL and the cap; non-queue flows keep `setSource`/`setTrack` with a per-call-site table; `SongFlow` collapses to the `introActive` flag; replace the 719-line cap with "no new App state beyond the hook". | Major |
+| S8-9 | **Scope beyond goals after the fixes.** Cut: Diagnostics module/export UI, `window.__lg`, the `PitchShifter` interface (contradicts the Non-Goal), `v`/`-`/`=` hotkeys, `?feature=`, move-up/down buttons (remove + re-add covers 8 entries), code bodies in the plan. Keep: the latency click-test script and the three small UI changes. Also: the intro must appear only when a set is started, never on every single-file Play (line 298 would make every Play wait ~2 s with no flag after M1). | Major |
+
+### Conflicts between consolidated fixes, resolved
+
+| Conflict | Resolution |
+|---|---|
+| **B2 (gate out of the engine) vs the design's `setPlayGate`** | B2 wins. The gate adds the most engine state to the one component every consumer depends on, breaks every `playingFlag` reader, and teaches the engine about queues. Refinements: (a) the pre-roll is App state, one `introActive` boolean plus the card's timer; the card calls the existing `engine.play()`; (b) the iOS prime happens inside the user's tap (muted `play()` → pause → seek 0) and the iOS check moves to the intro phase; (c) Pause/Seek/Restart dismiss the card; (d) delete the `gated` snapshot field and the engine fixture. |
+| **M2 (apply `keyOffset` in `buildTimeline`) vs B5 (`effectiveKey`)** | Keep the single `effectiveKey`; M2's mechanism is wrong. `timeline` is a `useMemo` and `KaraokeSession`, `GuideSynth` and `DemoSynth` are rebuilt on it (`App.tsx:109,112,198,215`), so rebuilding on each key tap would reset the score and tear down both synths mid-song; `PitchLane` reads raw `lines[].syllables`, not `timeline.flat`. Fix: a settable `keyOffset` on the timeline with a `noteOf(syl)` accessor (the `session.setScoring` pattern); PitchLane, GuideSynth, DemoSynth and scoring call it. `effectiveKey` is 0 for YouTube/Listen, when the worklet failed/bypassed, or before `setKey` resolves; equals the user's key for the demo (synth only). |
+| **M1 (one flag) vs G5 (every flag off = today)** | Narrow G5 and ungate Vocals and Queue. G5 becomes "with `VITE_FEATURE_KEY` off, the audio path (graph topology, `preservesPitch`, clock) is identical to today". Vocals and Queue are guarded by the baseline flows, not flags. `VITE_FEATURE_KEY` defaults off on web and native until Q1 and Q3 are measured; delete `?feature=`; state that native rollback is a store release. |
+| **B4 (one persistent `<video>`) vs the `audio-element` testid flows** | B4's fix loses; its diagnosis is half right. `mediaSources` is a `WeakMap`, so the "leak" is weak; the real reason is iOS element activation (Q2). Switching MP3 users to a `<video>` changes the default path. Fix: keep the audio/video split and key the element by **kind** instead of URL, so same-kind songs swap `src` on one element and keep one chain; a mixed-kind switch accepts the planned "tap to play" fallback on iOS; rewrite Alternative D's reason to iOS activation. Either way the engine needs an explicit reset on `src` swap because `attachMedia` returns early on the same element. |
+| **B1 (latency) — where the fix lives** | In the engine frame, not the graph: `engine.setOutputLatency(seconds)` written into `Frame` in song seconds (rate scaling handled once); one shared `lyricTime(frame, track)` helper in `model/timeline.ts` for all eight readers plus ProgressRow; the tracker gets the same setter. Drop "unaffected by construction"; treat 30 ms as unconfirmed until Q3; measure at 0.5×, 1× and 2×. |
+| **B5 `effectiveKey` and M2** | Agree once the `noteOf` mechanism is used. |
+| **B6 (flows do not exist) and S8-7** | Write the flows from the assertions already listed in the plan before relying on "baseline unchanged" gates. |
+
+### Simplicity verdict
+
+Vocals: yes (a bar toggle on an existing value). Key: yes if the spike passes; there is no simpler way to keep tempo while changing pitch (Alternative A moves tempo). Queue and Intro: simple once reduced to one hook, one boolean, `engine.play()` at countdown end and an element keyed by kind. Remaining cost: the new runtime dependency contradicts README line 5 ("no runtime dependencies beyond React") and needs an explicit decision paragraph, a README edit, a lazy `import()` and a precache decision.
+
+### Updated counts
+
+| Severity | Count |
+|---|---|
+| Blocker | 8 (B1–B7 + S8-1) |
+| Major | 17 (M1–M14 + S8-7, S8-8, S8-9) |
+| Nit | 8 |
