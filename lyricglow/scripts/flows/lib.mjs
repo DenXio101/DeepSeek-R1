@@ -100,6 +100,8 @@ export const LRCLIB_HITS = [
   { id: 102, trackName: "Second Song", artistName: "Test Artist", albumName: "Fixtures", duration: 6, instrumental: false, plainLyrics: "Second verse", syncedLyrics: LRC("Second Song", "Test Artist", [[0.6, "Second song first line"], [2.4, "Second song second line"], [4.2, "Second song third line"]]) },
   { id: 103, trackName: "Third Song", artistName: "Other Artist", albumName: "Fixtures", duration: 6, instrumental: false, plainLyrics: "Third", syncedLyrics: LRC("Third Song", "Other Artist", [[0.6, "Third song first line"], [2.4, "Third song second line"], [4.2, "Third song third line"]]) },
   { id: 104, trackName: "Plain Only", artistName: "Test Artist", albumName: null, duration: 200, instrumental: false, plainLyrics: "No timing here\nAt all", syncedLyrics: null },
+  // first line after a 2.4 s gap → the timeline gives line 0 a three-beat count-in
+  { id: 105, trackName: "Late Start", artistName: "Test Artist", albumName: "Fixtures", duration: 6, instrumental: false, plainLyrics: "Late start", syncedLyrics: LRC("Late Start", "Test Artist", [[2.4, "Late start first line"], [4.2, "Late start second line"]]) },
 ];
 
 export const YT_SEARCH = {

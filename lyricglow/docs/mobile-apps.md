@@ -84,5 +84,10 @@ splash, `https` scheme. CocoaPods is not required (Capacitor 8 uses Swift Packag
   device check: a local MP3 at key −2 with Vocals off and the mic on for 10 minutes on the
   Android phone, listening for dropouts; and the pitch lane / score staying in tune. Record
   the result in `egm/karafun-set/goldfish_review_report.md`.
+- **Set autoplay on iPhone (device check)**: build a two-song set, start it, let song 1
+  finish and tap Next. Song 2 should start by itself when its countdown ends (the Next tap
+  primes the element). If the card instead shows **Tap to start**, Safari refused the
+  automatic start: that fallback is expected to work, and the result goes in
+  `egm/karafun-set/goldfish_review_report.md`.
 - **Updating**: web and PWA update on deploy. Native apps need `npm run build:native`
   and a new store build each time you want the shell's bundled copy refreshed.

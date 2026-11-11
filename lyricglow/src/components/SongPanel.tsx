@@ -6,6 +6,7 @@ import { parseYouTubeId, youtubeSearchUrl } from "../engine/youtube";
 import { classifyUpload, kindLabel, officialQuery, rankHits, searchYouTube, youtubeApiKey, type YouTubeHit } from "../model/youtubeSearch";
 import { fitsDuration, sortHitsForBacking, type VideoMeta } from "../model/songMatch";
 import { IconMic, IconUpload } from "./Icons";
+import type { SetState } from "../hooks/useSongSet";
 
 /** an alternative official upload the app may hop to when the chosen one can't be embedded */
 export interface YouTubeCandidate {
@@ -41,13 +42,22 @@ interface Props {
   listening: boolean;
   /** server said recognition keys are missing */
   listenUnavailable?: boolean;
+  /** the session's song set (several local files in a row) */
+  set: SetState & { cap: number };
+  /** a file picked for the set that still needs its lyrics (the next "Use" adds it) */
+  pendingSetFile: File | null;
+  onSetFile: (file: File) => void;
+  onSetAddPlain: () => void;
+  onSetCancel: () => void;
+  onSetRemove: (id: string) => void;
+  onSetStart: () => void;
 }
 
 /**
  * "Find a song": search synced lyrics (LRCLIB), choose a backing track
  * (local file or YouTube link) and fine-tune lyric timing.
  */
-export default function SongPanel({ open, onClose, track, source, onPickSynced, onPickPlain, onFile, onYouTube, onClearSource, onNudge, backingDuration, backingMeta, focusLyrics, onListen, listening, listenUnavailable }: Props) {
+export default function SongPanel({ open, onClose, track, source, onPickSynced, onPickPlain, onFile, onYouTube, onClearSource, onNudge, backingDuration, backingMeta, focusLyrics, onListen, listening, listenUnavailable, set, pendingSetFile, onSetFile, onSetAddPlain, onSetCancel, onSetRemove, onSetStart }: Props) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<LyricsSearchHit[]>([]);
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
@@ -392,9 +402,85 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
           </div>
         </div>
 
-        {/* ── 3. timing ── */}
+        {/* ── 3. set: several local files in a row ── */}
+        <div className="sheet-section" data-testid="set-section">
+          <div className="sheet-label">3 · Set — sing several songs in a row</div>
+          {pendingSetFile && (
+            <div className="song-hint set-pending" data-testid="set-pending">
+              Adding <strong>{pendingSetFile.name}</strong> — pick its lyrics in step 1 (the next <strong>Use</strong> adds it), or{" "}
+              <button type="button" className="mini-btn" onClick={onSetAddPlain} data-testid="set-add-plain">
+                add without lyrics
+              </button>{" "}
+              <button type="button" className="mini-btn" onClick={onSetCancel} data-testid="set-cancel">
+                cancel
+              </button>
+            </div>
+          )}
+          {set.entries.length > 0 && (
+            <ol className="set-list" data-testid="set-list">
+              {set.entries.map((e, i) => (
+                <li key={e.id} className={`set-item ${i === set.index ? "set-item--current" : ""}`} data-testid={`set-item-${i}`}>
+                  <span className="set-num" aria-hidden="true">
+                    {i + 1}
+                  </span>
+                  <span className="song-hit-main">
+                    <span className="song-hit-title">{e.title}</span>
+                    <span className="song-hit-meta">
+                      {e.artist || e.file.name}
+                      {e.track ? "" : " · no lyrics yet"}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    onClick={() => onSetRemove(e.id)}
+                    disabled={set.active && i === set.index}
+                    aria-label={`Remove ${e.title} from the set`}
+                    data-testid={`set-remove-${i}`}
+                  >
+                    remove
+                  </button>
+                </li>
+              ))}
+            </ol>
+          )}
+          <div className="studio-row">
+            <label className={`dock-btn ${set.entries.length >= set.cap ? "dock-btn--off" : ""}`}>
+              <input
+                type="file"
+                accept="audio/*,video/*,.mp3,.mp4,.m4a,.wav,.ogg,.webm"
+                className="sr-only"
+                disabled={set.entries.length >= set.cap}
+                aria-label="Add a song to the set"
+                data-testid="set-file-input"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) onSetFile(f);
+                  e.target.value = "";
+                }}
+              />
+              <IconUpload /> Add song
+            </label>
+            <button type="button" className="dock-btn dock-btn--accent" onClick={onSetStart} disabled={!set.entries.length} data-testid="set-start">
+              {set.active || set.index >= 0 ? "Restart set" : "Start set"}
+            </button>
+            {set.index >= 0 && (
+              <span className="song-hint" data-testid="set-position">
+                Song {set.index + 1} of {set.entries.length}
+              </span>
+            )}
+          </div>
+          {set.entries.length >= set.cap && (
+            <div className="song-hint" data-testid="set-full">
+              Set is full ({set.cap} songs).
+            </div>
+          )}
+          <div className="song-hint">Each song gets a title card and a countdown; the result screen offers the next one. Key and Vocals carry over, speed resets. Your set lives in this tab only — reloading clears it.</div>
+        </div>
+
+        {/* ── 4. timing ── */}
         <div className="sheet-section">
-          <div className="sheet-label">3 · Lyric timing</div>
+          <div className="sheet-label">4 · Lyric timing</div>
           <div className="studio-row">
             <span className="song-hint">Words early or late? Shift them:</span>
             {[-0.5, -0.1, 0.1, 0.5].map((d) => (

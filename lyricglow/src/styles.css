@@ -565,6 +565,32 @@ a.dock-btn { text-decoration: none; }
 .count-in-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); transition: background 0.15s, box-shadow 0.15s; }
 .count-in-dot--on { background: var(--gold); box-shadow: 0 0 10px var(--gold-glow); }
 
+/* ── Intro card (pre-roll before a song of a set) ─────────────────────────── */
+.cue-slot:has(.intro-card) { height: auto; min-height: var(--cue-h); z-index: calc(var(--z-toast) + 1); }
+@keyframes intro-in { from { opacity: 0; transform: translateY(10px) scale(0.97); } to { opacity: 1; transform: none; } }
+.intro-card {
+  position: relative; z-index: var(--z-cue); margin: 0 auto; width: min(92vw, 520px); pointer-events: auto;
+  padding: 10px 14px 12px; border-radius: var(--radius-sm); background: var(--bg-panel); border: 1px solid var(--border);
+  display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;
+  animation: intro-in 0.4s ease-out both;
+}
+.intro-position { font-size: 0.72rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-muted); }
+.intro-title { font-family: var(--font-lyric); font-size: clamp(1.2rem, 4.2vw, 1.8rem); font-weight: 700; line-height: 1.15; color: var(--gold); text-shadow: 0 0 18px var(--gold-glow); }
+.intro-artist { font-size: 0.92rem; color: var(--text-primary); }
+.intro-card .count-in { position: static; margin: 6px 0 0; }
+.intro-skip { margin-top: 4px; }
+.intro-tap { margin-top: 8px; }
+[data-motion="reduced"] .intro-card { animation: none; }
+/* the lyrics wait quietly behind the card */
+[data-intro="true"] .karaoke-stage { opacity: 0.25; transition: opacity 0.3s; }
+
+/* set list in the song sheet */
+.set-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.set-item { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: rgba(255, 255, 255, 0.02); }
+.set-item--current { border-color: var(--gold); box-shadow: 0 0 10px var(--gold-glow); }
+.set-num { width: 1.4em; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-muted); flex-shrink: 0; }
+.dock-btn--off { opacity: 0.5; cursor: not-allowed; }
+
 /* ── Section card + light sweep ───────────────────────────────────────────── */
 @keyframes section-card {
   0% { opacity: 0; transform: translateY(14px) scale(0.96); letter-spacing: 0.4em; }

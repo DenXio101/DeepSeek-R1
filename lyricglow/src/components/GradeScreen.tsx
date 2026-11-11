@@ -8,11 +8,22 @@ interface Props {
   micOn: boolean;
   onSingAgain: () => void;
   onClose: () => void;
+  /** in a set with a song still to come: "Next: <title>" becomes the primary action */
+  nextTitle?: string;
+  onNext?: () => void;
+  /** in a set: "End set" replaces Close */
+  onEndSet?: () => void;
 }
 
-export default function GradeScreen({ title, summary, micOn, onSingAgain, onClose }: Props) {
+/**
+ * End-of-song result. Button order (= focus order): in a set with a next song
+ * Next · Sing again · End set; on the last song of a set Sing again · End set;
+ * otherwise Sing again · Close. The first button gets focus; the screen waits for a tap.
+ */
+export default function GradeScreen({ title, summary, micOn, onSingAgain, onClose, nextTitle, onNext, onEndSet }: Props) {
   const ref = useRef<HTMLDivElement>(null);
-  useModalFocus(true, ref, "[data-testid=btn-sing-again]");
+  const hasNext = !!nextTitle && !!onNext;
+  useModalFocus(true, ref, hasNext ? "[data-testid=btn-next]" : "[data-testid=btn-sing-again]");
   return (
     <div className="grade-backdrop" data-testid="grade-screen" role="dialog" aria-modal="true" aria-label="Performance result" ref={ref}>
       <div className="grade-card">
@@ -57,12 +68,23 @@ export default function GradeScreen({ title, summary, micOn, onSingAgain, onClos
           <p className="grade-hint">{micOn ? "No syllables were scored." : "Turn the microphone on to get a score and a grade next time."}</p>
         )}
         <div className="grade-actions">
-          <button type="button" className="transport-btn transport-btn--primary" onClick={onSingAgain} data-testid="btn-sing-again">
+          {hasNext && (
+            <button type="button" className="transport-btn transport-btn--primary" onClick={onNext} data-testid="btn-next">
+              Next: {nextTitle}
+            </button>
+          )}
+          <button type="button" className={hasNext ? "dock-btn" : "transport-btn transport-btn--primary"} onClick={onSingAgain} data-testid="btn-sing-again">
             Sing again
           </button>
-          <button type="button" className="dock-btn" onClick={onClose} data-testid="btn-close-grade">
-            Close
-          </button>
+          {onEndSet ? (
+            <button type="button" className="dock-btn" onClick={onEndSet} data-testid="btn-end-set">
+              End set
+            </button>
+          ) : (
+            <button type="button" className="dock-btn" onClick={onClose} data-testid="btn-close-grade">
+              Close
+            </button>
+          )}
         </div>
       </div>
     </div>

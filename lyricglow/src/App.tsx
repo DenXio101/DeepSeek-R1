@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { flushSync } from "react-dom";
+import IntroCard from "./components/IntroCard";
+import { useSongSet, type SetEntry } from "./hooks/useSongSet";
 import Karaoke, { type LyricsStyle } from "./Karaoke";
 import demoTrack from "./demoTrack";
 import type { Track } from "./lyrics";
@@ -50,6 +53,21 @@ import type { Point } from "./components/CueBall";
 import type { Voice } from "./lyrics";
 import { importLyricsText } from "./model/trackIO";
 import "./styles.css";
+
+/** muted play → pause inside a user gesture so iOS lets the element start by itself later (set intro) */
+function primeMediaElement(el: HTMLMediaElement | null): void {
+  if (!el) return;
+  el.muted = true;
+  el.play()
+    .then(() => {
+      el.pause();
+      el.currentTime = 0;
+      el.muted = false;
+    })
+    .catch(() => {
+      el.muted = false;
+    });
+}
 
 /** lyrics and backing track lengths this far apart usually mean a different version → offer Tap to sync */
 const VERSION_MISMATCH_S = 3;
@@ -314,6 +332,18 @@ export default function App() {
     if (fileUrl) URL.revokeObjectURL(fileUrl);
   }, [fileUrl]);
 
+  // ── song set + intro card ──────────────────────────────────────────────
+  const songSet = useSongSet();
+  const [pendingSetFile, setPendingSetFile] = useState<File | null>(null);
+  /** pre-roll before a song of a set: `tap` = the browser refused to start the music by itself */
+  const [intro, setIntro] = useState<{ active: boolean; tap: boolean }>({ active: false, tap: false });
+  /** engine generation whose first-line count-in is replaced by the intro countdown */
+  const [skipCountInGen, setSkipCountInGen] = useState(-1);
+  const leaveSet = useCallback(() => {
+    songSet.leave();
+    setIntro({ active: false, tap: false });
+  }, [songSet]);
+
   const handleFileUpload = useCallback((file: File) => {
     // create the context inside the gesture that chose the file (analyser + vocal chain)
     graph.ensureContext();
@@ -326,9 +356,85 @@ export default function App() {
     setSongOpen(false);
     setMoreOpen(false);
   }, [graph]);
+  /** a single file chosen by the user replaces whatever set was running */
+  const pickFile = useCallback(
+    (file: File) => {
+      leaveSet();
+      handleFileUpload(file);
+    },
+    [leaveSet, handleFileUpload],
+  );
+
+  /** put a set entry on the stage (same path as a single upload) and show its intro card */
+  const loadSetEntry = useCallback(
+    (entry: SetEntry) => {
+      handleFileUpload(entry.file);
+      setTrack(entry.track ?? { title: entry.title, artist: entry.artist, bpm: 100, lines: [], offset: 0, duration: 0 });
+      sessionObj.resetScore();
+      setGradeDismissed(-1);
+      setNotice(null);
+      engine.pause();
+      engine.seek(0);
+      setIntro({ active: true, tap: false });
+    },
+    [handleFileUpload, sessionObj, engine],
+  );
+  /**
+   * iOS only lets an element start by itself later if a user gesture played it once: render
+   * the new source synchronously inside the tap, then a muted play/pause primes the element.
+   */
+  const loadInGesture = useCallback(
+    (entry: SetEntry) => {
+      if (!isIOS()) {
+        loadSetEntry(entry);
+        return;
+      }
+      flushSync(() => loadSetEntry(entry));
+      primeMediaElement(engine.mediaElement);
+    },
+    [loadSetEntry, engine],
+  );
+  const startSet = useCallback(() => {
+    const e = songSet.start();
+    if (e) loadInGesture(e);
+  }, [songSet, loadInGesture]);
+  const nextSong = useCallback(() => {
+    const e = songSet.next();
+    if (!e) return;
+    engine.setRate(1); // speed is per song; key and vocals carry over
+    loadInGesture(e);
+  }, [songSet, engine, loadInGesture]);
+  const endSet = useCallback(() => {
+    songSet.end();
+    setGradeDismissed(session.generation);
+  }, [songSet, session.generation]);
+  /** countdown over (or Skip tapped): start the music and replace the first line's own count-in */
+  const introDone = useCallback(() => {
+    setSkipCountInGen(engine.frame.generation);
+    setIntro({ active: false, tap: false });
+    engine.play();
+    window.setTimeout(() => {
+      // the browser refused to start the music by itself: ask for a tap
+      if (!engine.getSnapshot().playing) setIntro({ active: true, tap: true });
+    }, 500);
+  }, [engine]);
+  const introShown = intro.active && !playback.playing && mode === "perform";
+  const addSetFile = useCallback((file: File) => {
+    setPendingSetFile(file);
+    setSongFocusLyrics((n) => n + 1);
+  }, []);
+  const addSetEntry = useCallback(
+    (file: File, track: Track | null) => {
+      const r = songSet.add(file, track);
+      setPendingSetFile(null);
+      setNotice(r.ok ? { kind: "info", text: `Added to the set: ${track?.title ?? file.name} (${songSet.state.entries.length + 1} of ${songSet.cap}).` } : { kind: "error", text: r.reason ?? "Couldn't add that song." });
+    },
+    [songSet],
+  );
 
   const handleYouTube = useCallback(
     (videoId: string, meta?: VideoMeta, alternates?: YouTubeCandidate[]) => {
+      leaveSet();
       setSource({ kind: "youtube", videoId });
       setSongOpen(false);
       setBackingMeta(meta ?? null);
@@ -364,7 +470,7 @@ export default function App() {
         }
       });
     },
-    [engine],
+    [engine, leaveSet],
   );
 
   /** embed-blocked (101/150) or missing (100) official upload → try the next candidate, at most MAX_HOPS times */
@@ -384,15 +490,17 @@ export default function App() {
   );
 
   const clearSource = useCallback(() => {
+    leaveSet();
     setSource({ kind: "none" });
     setBackingMeta(null);
     setListenSong(null);
     ytQueueRef.current = null;
     autoMatchRef.current++;
-  }, []);
+  }, [leaveSet]);
 
   // ── Listen mode (Shazam-style): the room plays the song, we recognise it and follow ──
   const startListen = useCallback(() => {
+    leaveSet();
     graph.ensureContext();
     graph.resume();
     autoMatchRef.current++;
@@ -405,7 +513,7 @@ export default function App() {
     setSyncing(false);
     // the lyric clock must run for captures to be scheduled; it is re-positioned on the first match
     engine.play();
-  }, [graph, engine]);
+  }, [graph, engine, leaveSet]);
 
   const stopListen = useCallback(() => {
     engine.pause();
@@ -487,12 +595,17 @@ export default function App() {
     (hit: LyricsSearchHit) => {
       try {
         const t = trackFromHit(hit);
+        // a file is waiting for its lyrics in the set: these are them
+        if (pendingSetFile) {
+          addSetEntry(pendingSetFile, t);
+          return;
+        }
         loadTrack(t, `Loaded "${hit.title}" — ${t.lines.length} timed lines. Now add a backing track.`);
       } catch (err: unknown) {
         setNotice({ kind: "error", text: err instanceof Error ? err.message : "Couldn't use those lyrics." });
       }
     },
-    [loadTrack],
+    [loadTrack, pendingSetFile, addSetEntry],
   );
 
   const pickPlain = useCallback((hit: LyricsSearchHit) => {
@@ -591,6 +704,7 @@ export default function App() {
       data-chrome={chromeHidden ? "hidden" : "visible"}
       data-fullscreen={String(fullscreen.active)}
       data-syncing={String(syncing && mode === "perform")}
+      data-intro={String(introShown)}
       data-generation={playback.generation}
       data-testid="app-root"
     >
@@ -676,8 +790,24 @@ export default function App() {
         </div>
 
         <div className="cue-slot" data-testid="cue-slot">
-          <CountIn countIn={session.countIn} variant={lyricsStyle === "karafun" ? "dots" : "number"} />
-          <SectionCard event={session.sectionEvent} />
+          {introShown && songSet.current && (
+            <IntroCard
+              key={`${songSet.state.index}-${playback.generation}`}
+              title={songSet.current.title}
+              artist={songSet.current.artist}
+              position={songSet.position}
+              keyOffset={effectiveKey || (KEY_ENABLED ? keyOffset : 0)}
+              beatSeconds={timeline.beat}
+              tapToStart={intro.tap}
+              onDone={introDone}
+              onSkip={introDone}
+            />
+          )}
+          <CountIn
+            countIn={introShown || (session.countIn?.lineIdx === 0 && playback.generation === skipCountInGen) ? null : session.countIn}
+            variant={lyricsStyle === "karafun" ? "dots" : "number"}
+          />
+          {!introShown && <SectionCard event={session.sectionEvent} />}
         </div>
         {syncing && mode === "perform" && <SyncCard engine={engine} track={track} onApply={applyTapSync} onCancel={() => setSyncing(false)} />}
 
@@ -716,6 +846,9 @@ export default function App() {
           micOn={micOn}
           onSingAgain={singAgain}
           onClose={() => setGradeDismissed(session.generation)}
+          nextTitle={songSet.state.active && songSet.nextEntry ? songSet.nextEntry.title : undefined}
+          onNext={songSet.state.active && songSet.nextEntry ? nextSong : undefined}
+          onEndSet={songSet.state.active ? endSet : undefined}
         />
       )}
 
@@ -727,8 +860,15 @@ export default function App() {
         source={source}
         onPickSynced={pickSynced}
         onPickPlain={pickPlain}
-        onFile={handleFileUpload}
+        onFile={pickFile}
         onYouTube={handleYouTube}
+        set={{ ...songSet.state, cap: songSet.cap }}
+        pendingSetFile={pendingSetFile}
+        onSetFile={addSetFile}
+        onSetAddPlain={() => pendingSetFile && addSetEntry(pendingSetFile, null)}
+        onSetCancel={() => setPendingSetFile(null)}
+        onSetRemove={songSet.remove}
+        onSetStart={startSet}
         onClearSource={clearSource}
         onNudge={nudgeLyrics}
         backingDuration={backingDuration}
@@ -769,7 +909,7 @@ export default function App() {
         onLyricsStyle={setLyricsStyle}
         effects={effects}
         onToggleEffects={() => setEffects((e) => (e === "reduced" ? "auto" : "reduced"))}
-        onMediaFile={handleFileUpload}
+        onMediaFile={pickFile}
         onLyricsFile={handleImportFile}
         onOpenStudio={() => {
           setMoreOpen(false);

@@ -112,4 +112,14 @@ Decision: one constant `SHIFTER_LATENCY_S = 0.128` (wall seconds, scaled by rate
 | Step 0 flows in repo | `78cffd8` | 6 flows green, BASELINE.md recorded |
 | Phase 1 Vocals switch + Restart in the seek row | `4ab3e9c` | tsc, eslint, build, check:model, 7 flows green; baseline numbers unchanged |
 | Phase 2a spike | `8cd0a35` | GO (table above) |
-| Phase 2b Key change | see git log | tsc, eslint, build (processor under assets asserted), check:model (+11 fixtures), 8 flows green incl. `verify-key` |
+| Phase 2b Key change | `14de173` | tsc, eslint, build (processor under assets asserted), check:model (+11 fixtures), 8 flows green incl. `verify-key` |
+| Phase 3 song-set hook, element keyed by kind, engine reset on src swap | `968a4bc` | gate green; 8 flows unchanged (same-kind swap exercised by `verify-file`) |
+| Phase 4 + 5 intro card, set UI, grade screen Next / End set | see git log | gate green; 11 flows incl. `verify-intro` (countdown, first count-in replaced, Skip, Play, no card for single files) and `verify-set` (three songs, cap, remove, Next with focus, key carried over, speed reset, one element, one URL revoked per advance, End set) |
+
+### Deviations from the resolved design (recorded, not hidden)
+
+- **App state**: besides `keyOffset`, `introActive` (as `intro {active, tap}`) and the hook, App also holds `keyState` (the shifter's resolved state), `pendingSetFile` (a file waiting for its lyrics) and `skipCountInGen`. App.tsx grew from 719 to ~945 lines. A follow-up could move the set/intro handlers into `useSongSet` or a `useSetFlow` hook; the behaviour is covered by the flows either way.
+- **Intro card placement**: in the cue slot as designed, but the slot grows to fit the card (title, artist, position, key, dots, Skip) and sits above the toast stack; a set start clears any notice so the card is unobstructed.
+- **Shifter latency**: one constant instead of the per-rate table, justified by the spike (every reliable cell within ±26 ms of 0.128 s).
+- **Latency test in the browser**: the 30 ms drift check in `verify-key` is covered by the `lyricTime` fixtures plus the running-clock check; the headless browser cannot hear the audio, so the authoritative number is the spike's.
+- **iOS prime**: implemented with `flushSync` + muted play/pause inside the tap (iOS only) and the "Tap to start" fallback after 500 ms; unverifiable in the sandbox (Q2, owner's iPhone).
