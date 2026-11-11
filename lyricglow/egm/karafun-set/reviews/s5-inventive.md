@@ -1,0 +1,11 @@
+# Stage 5 — Inventive Catalyst (full file)
+1. **Major** L34,119,270,288 — Phase 2 ungated contradicts "flag off = today". → SongQueue always owns the URL (one-entry queue flag-off); drop the unchanged-URL claim; rollback via the backup branch + baseline flows.
+2. **Major** L123,159–163,290,323 — one element fails for mixed MP3/MP4 (tag swap remounts → new source + chain). → Persistent `<video playsInline>` for every file (hidden for audio), or state the guarantee holds per kind and test MP3→MP4→MP3.
+3. **Major** L31,50,89,93,190,203,332–334 — a constant can't meet 30 ms; subtracting only at key ≠ 0 is a step in the lyric clock; a 30 ms crossfade against a 20–60 ms-later path comb-filters. → DelayNode equal to the latency in the dry path during the crossfade; ramp the latency term over 30 ms; `latency(sampleRate, rate)` table; optional runtime click calibration.
+4. **Major** L76,99–102,119,179,189 — on auto-bypass/failure scoring, lane, guide, demo still use `keyOffset`. → Single `effectiveKey` derived from shifter status (0 when bypassed/failed) read by all consumers; hysteresis; "Key paused" badge.
+5. **Major** L49,108,282,325 — the gate defers `media.play()` ~2 s even for song 1 → iOS autoplay risk. → Prime the element inside the tap (muted play → pause → seek 0); move the iOS check to Phase 3; tap-to-start fallback.
+6. **Major** L18,137,183 — three build-time flags duplicate platform rollback. → One flag `VITE_FEATURE_KEY`; Vocals and Queue ungated.
+7. **Major** L43,89,133,278,332 — `PitchShifter` interface with one impl contradicts the non-goal; Diagnostics + `window.__lg` beyond need; SongFlow phases duplicate. → Concrete `SoundTouchShifter`; console counters + dev export; SongFlow = idle | intro | playing | grade.
+8. **Major** README L5; design L90,179,329 — README says "no runtime dependencies beyond React"; lazy-load claim needs `import()` and the precache glob fetches the processor anyway. → Decision paragraph + README edit; state `import()` and the precache choice.
+9. **Nit** L127,251–254 — Restart moves between two places by source. → Restart always in the seek row; slot 2 = Vocals or a disabled Vocals with reason.
+10. **Nit** — code-level detail; 719 vs 1000 gates; Alternative A's physical reason; analyser side-branch.

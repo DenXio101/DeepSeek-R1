@@ -1,0 +1,11 @@
+# Lens: Observability (codebase_details persona, BRAINSTORM)
+
+Evidence base: no telemetry today; silent `catch {}` blocks in AudioGraph.ts (≈ lines 122, 171, 194, 221, 263, 294, 400); diagnostics must live in React memory and be downloadable.
+
+1. **Blocker** — Key shifter failure modes (worklet `addModule` rejecting, CSP/path, suspended context, CPU overrun) would be silent. → Key engine exposes a status (`idle | loading | active | bypassed | failed` + reason) with a `data-testid` readout; every catch in the new path records into an in-memory ring buffer (~200 events); on failure fall back to key 0 with a visible note.
+2. **Blocker** — Nothing measures audible latency vs the engine clock (`ctx.baseLatency` / `outputLatency` never read). → Record shifter latency + context latencies; a fixed, tested compensation constant; a check:model / Playwright assertion that lyric time stays within a stated tolerance (e.g. 30 ms) at key ±N and rate 0.5/1/2.
+3. **Major** — Worklet overruns show as glitches, not errors; rAF loop has no frame metric. → Worklet process-time EMA/max via port messages (~1 Hz), rAF frame-delta p95; threshold (e.g. > 70 % of quantum budget) auto-disables the shifter with a notice.
+4. **Major** — Queue + object-URL lifecycle (App.tsx revokes on change): premature revoke = dead song, missing revoke = leak; `<audio>` error could stall. → Structured queue events (`song_added/started/ended/skipped`, `url_revoked`, `media_error` with code); a media error must advance the queue or show a per-item error state.
+5. **Major** — Per-song state (key, tempo, vocal level, mono verdict) has no record; the MediaElementSource WeakMap can carry graph state across songs. → `song_state_applied` event on each start; explicit, tested reset semantics.
+6. **Major** — No export path for field reports in PWA/Capacitor. → "Download diagnostics.json" under More → Files & tools (commit hash, UA, context sampleRate/state/latencies, key status, queue log, last errors; no lyrics, file names or audio; no persistent storage).
+7. **Nit** — No assertable state for intro/countdown/queue/vocals. → `data-testid` readouts (`key-readout`, `queue-position`, `intro-countdown`, `vocals-state`); pure fixtures for queue advance and 2^(n/12).

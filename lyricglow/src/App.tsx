@@ -1,0 +1,1039 @@
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { flushSync } from "react-dom";
+import IntroCard from "./components/IntroCard";
+import { useSongSet, type SetEntry } from "./hooks/useSongSet";
+import Karaoke, { type LyricsStyle } from "./Karaoke";
+import demoTrack from "./demoTrack";
+import type { Track } from "./lyrics";
+import { normalizeTrack } from "./model/normalize";
+import { buildTimeline } from "./model/timeline";
+import { usePlaybackEngine } from "./engine/usePlaybackEngine";
+import { useKaraokeSession } from "./engine/useKaraokeSession";
+import { useIsLandscape } from "./hooks/useOrientation";
+import Header, { type Theme } from "./components/Header";
+import ThumbBar from "./components/ThumbBar";
+import { LIGHT_VOCAL, levelOfMode, nextVocalsMode, vocalsModeOf, type VocalsState } from "./model/vocals";
+import MoreSheet, { type KeyControl } from "./components/MoreSheet";
+import KeyPill from "./components/KeyPill";
+import { KEY_ENABLED } from "./featureFlags";
+import { KEY_MAX, KEY_MIN, SHIFTER_LATENCY_S } from "./engine/SoundTouchShifter";
+import type { KeyState } from "./engine/AudioGraph";
+import { SyncCard } from "./components/SyncControl";
+import { formatOffset } from "./model/sync";
+import MediaElement, { type MediaKind } from "./components/MediaElement";
+import YouTubeStage from "./components/YouTubeStage";
+import SongPanel, { type BackingSource, type YouTubeCandidate } from "./components/SongPanel";
+import MosaicBackdrop from "./components/MosaicBackdrop";
+import { searchLyrics, studioTextFromHit, trackFromHit, type LyricsSearchHit } from "./model/lrclib";
+import { cleanVideoTitle, pickLyricsForVideo, trackMatchesVideo, type VideoMeta } from "./model/songMatch";
+import { backingQuery, fetchVideoMeta, pickBackingVersion, searchYouTube, youtubeApiKey } from "./model/youtubeSearch";
+import SyncStudio from "./components/SyncStudio/SyncStudio";
+import { initStudio, studioReducer } from "./components/SyncStudio/studioReducer";
+import SpectrumCanvas from "./components/SpectrumCanvas";
+import { useAudioGraph } from "./engine/useAudioGraph";
+import { isIOS, useReducedMotion, type EffectsLevel } from "./hooks/useReducedMotion";
+import { PitchTracker } from "./engine/PitchTracker";
+import { DemoSynth } from "./engine/DemoSynth";
+import { GuideSynth } from "./engine/GuideSynth";
+import { useListener } from "./engine/useListener";
+import type { Capture, RecognizeOutcome } from "./engine/Listener";
+import { positionAtCaptureEnd } from "./model/acr";
+import ListenPill from "./components/ListenPill";
+import type { Difficulty } from "./engine/scoring";
+import PitchLane from "./components/PitchLane";
+import ScoreHud from "./components/ScoreHud";
+import GradeScreen from "./components/GradeScreen";
+import ParticleLayer, { type StageFx } from "./components/ParticleLayer";
+import CountIn from "./components/CountIn";
+import SectionCard from "./components/SectionCard";
+import { useFullscreen } from "./hooks/useFullscreen";
+import { useIdleHide } from "./hooks/useIdleHide";
+import { useHotkeys } from "./hooks/useHotkeys";
+import { MONO_NOTE, useVocalLevel } from "./hooks/useVocalLevel";
+import type { Point } from "./components/CueBall";
+import type { Voice } from "./lyrics";
+import { importLyricsText } from "./model/trackIO";
+import "./styles.css";
+
+/** muted play → pause inside a user gesture so iOS lets the element start by itself later (set intro) */
+function primeMediaElement(el: HTMLMediaElement | null): void {
+  if (!el) return;
+  el.muted = true;
+  el.play()
+    .then(() => {
+      el.pause();
+      el.currentTime = 0;
+      el.muted = false;
+    })
+    .catch(() => {
+      el.muted = false;
+    });
+}
+
+interface YtVersion {
+  videoId: string;
+  meta: VideoMeta | null;
+  /** lyric-timing offset remembered for this upload (karaoke versions rarely start at the same moment) */
+  offset: number;
+}
+/** the official video and, once looked up, a karaoke upload of the same song */
+interface YtPair {
+  original: YtVersion;
+  backing: YtVersion | null;
+  showing: "original" | "backing";
+  searched: boolean;
+  busy: boolean;
+  /** where to resume after a swap */
+  resume: { at: number; play: boolean } | null;
+}
+
+/** lyrics and backing track lengths this far apart usually mean a different version → offer Tap to sync */
+const VERSION_MISMATCH_S = 3;
+/** how many embed-blocked official uploads to skip past automatically */
+const MAX_HOPS = 3;
+/** Listen mode: seconds between room checks (dev builds accept ?listenEvery=N for tests) */
+const RESYNC_S = (() => {
+  if (import.meta.env.DEV) {
+    const n = Number(new URLSearchParams(window.location.search).get("listenEvery"));
+    if (n >= 1) return n;
+  }
+  return 25;
+})();
+
+
+export default function App() {
+  const [theme, setTheme] = useState<Theme>("dark");
+  useEffect(() => {
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#0a0a0e" : "#f5f0e8");
+    document.documentElement.style.colorScheme = theme;
+  }, [theme]);
+  const [track, setTrack] = useState<Track>(() => normalizeTrack(demoTrack));
+  const [notice, setNotice] = useState<{ kind: "error" | "info"; text: string } | null>(null);
+  const [mode, setMode] = useState<"perform" | "studio">("perform");
+  const [studio, dispatchStudio] = useReducer(studioReducer, undefined, initStudio);
+  const [previewTrack, setPreviewTrack] = useState<Track | null>(null);
+  const [visualizer, setVisualizer] = useState<boolean>(() => !isIOS());
+  const [effects, setEffects] = useState<EffectsLevel>("auto");
+  const [lyricsStyle, setLyricsStyle] = useState<LyricsStyle>("karafun");
+  const reducedMotion = useReducedMotion(effects);
+  const [difficulty, setDifficulty] = useState<Difficulty>("normal");
+  const [micLatencyMs, setMicLatencyMs] = useState(60);
+  const [demoSound, setDemoSound] = useState(true);
+  const [guideLevel, setGuideLevel] = useState(0.25);
+  const [vocalLevel, setVocalLevel] = useState(LIGHT_VOCAL);
+  const iosHintShown = useRef(false);
+  const [gradeDismissed, setGradeDismissed] = useState(-1);
+  const fxRef = useRef<StageFx | null>(null);
+  const onPeak = useCallback((p: Point, voice: Voice) => fxRef.current?.emit(p, voice), []);
+  const fullscreen = useFullscreen();
+  const shownTrack = mode === "studio" && previewTrack ? previewTrack : track;
+  const [source, setSource] = useState<BackingSource>({ kind: "none" });
+  const [songOpen, setSongOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [hintDismissedFor, setHintDismissedFor] = useState("");
+  const [songFocusLyrics, setSongFocusLyrics] = useState(0);
+  const [backingMeta, setBackingMeta] = useState<VideoMeta | null>(null);
+  const ytQueueRef = useRef<{ videoId: string; rest: YouTubeCandidate[]; hops: number } | null>(null);
+  const [listenSong, setListenSong] = useState<{ title: string; artist: string } | null>(null);
+  const [listenSetup, setListenSetup] = useState<"unknown" | "missing">("unknown");
+  const autoMatchRef = useRef(0);
+  // latest track for async callbacks
+  const trackRef = useRef<Track | null>(null);
+  useEffect(() => {
+    trackRef.current = track;
+  }, [track]);
+  const media = source.kind === "file" ? source : null;
+  const isLandscape = useIsLandscape();
+
+  const timeline = useMemo(() => buildTimeline(shownTrack), [shownTrack]);
+  const { engine, playback } = usePlaybackEngine();
+  const { graph, mic } = useAudioGraph();
+  const { session: sessionObj, state: session } = useKaraokeSession(engine, timeline);
+  const tracker = useMemo(() => new PitchTracker(graph), [graph]);
+  const micOn = mic.status === "on";
+  const vocalMono = useVocalLevel(engine, graph, media && playback.sourceKind === "media" ? media.url : null, vocalLevel);
+
+  // the Vocals switch (thumb bar) and the Voice slider (More) edit the same level;
+  // the switch remembers the last non-zero level so "on" restores it
+  const fileVocalsMode = vocalsModeOf(vocalLevel);
+  const cycleFileVocals = useCallback(() => {
+    setVocalLevel((v) => levelOfMode(nextVocalsMode(vocalsModeOf(v), false, Math.round(v * 100))));
+  }, []);
+  const vocalsApply = !!media && playback.sourceKind === "media" && graph.supported;
+
+  // ── key change: session state beside the vocal level; the shifter is in the graph only at key ≠ 0 ──
+  const [keyOffset, setKeyOffset] = useState(0);
+  const [keyState, setKeyState] = useState<KeyState>({ status: "idle", reason: null, active: false });
+  const listening = source.kind === "listen";
+  const isDemoSource = playback.sourceKind === "demo";
+  const keyOnDemo = isDemoSource && !listening && source.kind === "none";
+  useEffect(() => {
+    if (!KEY_ENABLED || !vocalsApply) return;
+    const el = engine.mediaElement;
+    if (!el) return;
+    let cancelled = false;
+    void graph.setKey(el, keyOffset).then((st) => {
+      if (!cancelled) setKeyState(st);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [engine, graph, vocalsApply, keyOffset]);
+  // the last resolved state only counts while a local file is the source (a new file resolves anew)
+  const keyActive = vocalsApply && keyState.active;
+  const keyUnavailable = vocalsApply && keyState.status === "unavailable";
+  useEffect(() => {
+    if (!KEY_ENABLED) return;
+    const el = engine.mediaElement;
+    if (el) graph.mirrorRate(el, playback.rate);
+  }, [engine, graph, playback.rate, keyActive]);
+  useEffect(() => {
+    engine.setOutputLatency(keyActive ? SHIFTER_LATENCY_S : 0);
+  }, [engine, keyActive]);
+  /** the only transposition value handed to lyrics consumers: 0 unless the audio really is shifted (or the demo synth plays) */
+  const effectiveKey = !KEY_ENABLED ? 0 : keyOnDemo ? keyOffset : keyActive ? keyOffset : 0;
+  useEffect(() => {
+    timeline.setKeyOffset(effectiveKey);
+    engine.requestFrame();
+  }, [timeline, effectiveKey, engine]);
+  const keyControl: KeyControl | null = KEY_ENABLED
+    ? {
+        value: keyOffset,
+        enabled: keyOnDemo || (vocalsApply && !keyUnavailable),
+        statusText: !keyOnDemo && !vocalsApply
+          ? "Local files and the demo only"
+          : keyUnavailable
+            ? `not available — ${keyState.reason ?? "no pitch shifter"}`
+            : keyOffset === 0
+              ? "off"
+              : keyOnDemo
+                ? "on (demo melody)"
+                : keyActive
+                  ? "on"
+                  : "loading…",
+      }
+    : null;
+
+  // mic → pitch tracker → session scoring
+  useEffect(() => {
+    if (!micOn) return;
+    return tracker.attach(engine);
+  }, [micOn, tracker, engine]);
+  useEffect(() => {
+    tracker.setOffset(shownTrack.offset ?? 0);
+  }, [tracker, shownTrack]);
+  useEffect(() => {
+    sessionObj.setScoring(micOn ? tracker : null, { difficulty, micLatency: micLatencyMs / 1000 });
+  }, [sessionObj, micOn, tracker, difficulty, micLatencyMs]);
+
+  const toggleMic = useCallback(() => {
+    if (mic.status === "on" || mic.status === "requesting") graph.disableMic();
+    else {
+      graph.ensureContext();
+      graph.resume();
+      void graph.enableMic();
+    }
+  }, [graph, mic.status]);
+
+  // finale embers once per finish, then the grade card after a beat
+  const finaleKey = session.finished ? session.generation : -1;
+  const [gradeReadyKey, setGradeReadyKey] = useState(-1);
+  useEffect(() => {
+    if (finaleKey < 0) return;
+    if (reducedMotion) {
+      const id = window.setTimeout(() => setGradeReadyKey(finaleKey), 0);
+      return () => window.clearTimeout(id);
+    }
+    fxRef.current?.finale();
+    const id = window.setTimeout(() => setGradeReadyKey(finaleKey), 1700);
+    return () => window.clearTimeout(id);
+  }, [finaleKey, reducedMotion]);
+
+  // performance mode: hide chrome after 3 s idle while playing fullscreen
+  const chromeHidden = useIdleHide(fullscreen.active && playback.playing && mode === "perform" && !syncing, 3000);
+
+  const nudgeLyrics = useCallback((delta: number) => {
+    setTrack((t) => ({ ...t, offset: Math.round(((t.offset ?? 0) + delta) * 100) / 100 }));
+  }, []);
+
+  useHotkeys(
+    {
+      Space: () => engine.toggle(),
+      k: () => engine.toggle(),
+      f: () => fullscreen.toggle(),
+      ArrowLeft: () => engine.seek(engine.frame.time - 5),
+      ArrowRight: () => engine.seek(engine.frame.time + 5),
+      m: () => toggleMic(),
+      r: () => engine.restart(),
+      "[": () => nudgeLyrics(-0.1),
+      "]": () => nudgeLyrics(0.1),
+      Escape: () => setSyncing(false),
+    },
+    mode === "perform" && !songOpen && !moreOpen,
+  );
+
+  const singAgain = useCallback(() => {
+    sessionObj.resetScore();
+    setGradeDismissed(-1);
+    engine.restart();
+  }, [sessionObj, engine]);
+
+  // AudioContext must be created/resumed inside the user's Play gesture
+  useEffect(() => {
+    engine.setBeforePlay(() => {
+      // the guide cue and the demo melody both need a context created inside this gesture
+      graph.ensureContext();
+      graph.resume();
+    });
+    return () => engine.setBeforePlay(null);
+  }, [engine, graph]);
+
+  // the guide cue: a very quiet hum before each line + tick per word over real backing tracks
+  const guideRef = useRef<GuideSynth | null>(null);
+  const guideLevelRef = useRef(guideLevel);
+  const guideActive = (playback.sourceKind !== "demo" || listening) && mode === "perform";
+  useEffect(() => {
+    if (!guideActive) return;
+    const synth = new GuideSynth(graph, timeline, guideLevelRef.current);
+    guideRef.current = synth;
+    const off = synth.attach(engine);
+    return () => {
+      off();
+      if (guideRef.current === synth) guideRef.current = null;
+    };
+  }, [guideActive, graph, timeline, engine]);
+  useEffect(() => {
+    guideLevelRef.current = guideLevel;
+    guideRef.current?.setLevel(guideLevel);
+  }, [guideLevel]);
+
+  // the demo sings: synthesized melody + beat while no backing track is loaded
+  useEffect(() => {
+    if (!isDemoSource || !demoSound || mode === "studio" || listening) return;
+    const synth = new DemoSynth(graph, timeline);
+    return synth.attach(engine);
+  }, [isDemoSource, demoSound, mode, graph, timeline, engine, listening]);
+
+  useEffect(() => {
+    if (playback.playing && isDemoSource && demoSound && isIOS() && !iosHintShown.current) {
+      iosHintShown.current = true;
+      setNotice({ kind: "info", text: "Demo melody playing. Hear nothing on iPhone? Flip the silent switch off and turn the volume up." });
+    }
+  }, [playback.playing, isDemoSource, demoSound]);
+
+  // route uploaded media through the analyser when the visualizer is on
+  useEffect(() => {
+    if (!visualizer || playback.sourceKind !== "media") return;
+    const el = engine.mediaElement;
+    if (el) graph.attachMedia(el);
+  }, [visualizer, playback.sourceKind, engine, graph]);
+
+  useEffect(() => {
+    engine.setDemoDuration(timeline.duration);
+  }, [engine, timeline]);
+
+  // object URL lifecycle
+  const fileUrl = media?.url;
+  useEffect(() => () => {
+    if (fileUrl) URL.revokeObjectURL(fileUrl);
+  }, [fileUrl]);
+
+  // ── song set + intro card ──────────────────────────────────────────────
+  const songSet = useSongSet();
+  const [pendingSetFile, setPendingSetFile] = useState<File | null>(null);
+  /** pre-roll before a song of a set: `tap` = the browser refused to start the music by itself */
+  const [intro, setIntro] = useState<{ active: boolean; tap: boolean }>({ active: false, tap: false });
+  /** engine generation whose first-line count-in is replaced by the intro countdown */
+  const [skipCountInGen, setSkipCountInGen] = useState(-1);
+  const leaveSet = useCallback(() => {
+    songSet.leave();
+    setIntro({ active: false, tap: false });
+  }, [songSet]);
+
+  const handleFileUpload = useCallback((file: File) => {
+    // create the context inside the gesture that chose the file (analyser + vocal chain)
+    graph.ensureContext();
+    graph.resume();
+    const url = URL.createObjectURL(file);
+    const kind: MediaKind = file.type.startsWith("video/") || /\.(mp4|webm|mov|m4v)$/i.test(file.name) ? "video" : "audio";
+    setSource({ kind: "file", url, mediaKind: kind, name: file.name });
+    setBackingMeta(null);
+    autoMatchRef.current++;
+    setSongOpen(false);
+    setMoreOpen(false);
+  }, [graph]);
+  /** a single file chosen by the user replaces whatever set was running */
+  const pickFile = useCallback(
+    (file: File) => {
+      leaveSet();
+      handleFileUpload(file);
+    },
+    [leaveSet, handleFileUpload],
+  );
+
+  /** put a set entry on the stage (same path as a single upload) and show its intro card */
+  const loadSetEntry = useCallback(
+    (entry: SetEntry) => {
+      handleFileUpload(entry.file);
+      setTrack(entry.track ?? { title: entry.title, artist: entry.artist, bpm: 100, lines: [], offset: 0, duration: 0 });
+      sessionObj.resetScore();
+      setGradeDismissed(-1);
+      setNotice(null);
+      engine.pause();
+      engine.seek(0);
+      setIntro({ active: true, tap: false });
+    },
+    [handleFileUpload, sessionObj, engine],
+  );
+  /**
+   * iOS only lets an element start by itself later if a user gesture played it once: render
+   * the new source synchronously inside the tap, then a muted play/pause primes the element.
+   */
+  const loadInGesture = useCallback(
+    (entry: SetEntry) => {
+      if (!isIOS()) {
+        loadSetEntry(entry);
+        return;
+      }
+      flushSync(() => loadSetEntry(entry));
+      primeMediaElement(engine.mediaElement);
+    },
+    [loadSetEntry, engine],
+  );
+  const startSet = useCallback(() => {
+    const e = songSet.start();
+    if (e) loadInGesture(e);
+  }, [songSet, loadInGesture]);
+  const nextSong = useCallback(() => {
+    const e = songSet.next();
+    if (!e) return;
+    engine.setRate(1); // speed is per song; key and vocals carry over
+    loadInGesture(e);
+  }, [songSet, engine, loadInGesture]);
+  const endSet = useCallback(() => {
+    songSet.end();
+    setGradeDismissed(session.generation);
+  }, [songSet, session.generation]);
+  /** countdown over (or Skip tapped): start the music and replace the first line's own count-in */
+  const introDone = useCallback(() => {
+    setSkipCountInGen(engine.frame.generation);
+    setIntro({ active: false, tap: false });
+    engine.play();
+    window.setTimeout(() => {
+      // the browser refused to start the music by itself: ask for a tap
+      if (!engine.getSnapshot().playing) setIntro({ active: true, tap: true });
+    }, 500);
+  }, [engine]);
+  const introShown = intro.active && !playback.playing && mode === "perform";
+  const addSetFile = useCallback((file: File) => {
+    setPendingSetFile(file);
+    setSongFocusLyrics((n) => n + 1);
+  }, []);
+  const addSetEntry = useCallback(
+    (file: File, track: Track | null) => {
+      const r = songSet.add(file, track);
+      setPendingSetFile(null);
+      setNotice(r.ok ? { kind: "info", text: `Added to the set: ${track?.title ?? file.name} (${songSet.state.entries.length + 1} of ${songSet.cap}).` } : { kind: "error", text: r.reason ?? "Couldn't add that song." });
+    },
+    [songSet],
+  );
+
+  // ── YouTube "minus one": swap between the official video and a karaoke upload ──
+  const [ytPair, setYtPairState] = useState<YtPair | null>(null);
+  const ytPairRef = useRef<YtPair | null>(null);
+  const setYtPair = useCallback((p: YtPair | null) => {
+    ytPairRef.current = p;
+    setYtPairState(p);
+  }, []);
+
+  const handleYouTube = useCallback(
+    (videoId: string, meta?: VideoMeta, alternates?: YouTubeCandidate[]) => {
+      leaveSet();
+      setYtPair({ original: { videoId, meta: meta ?? null, offset: 0 }, backing: null, showing: "original", searched: false, busy: false, resume: null });
+      setSource({ kind: "youtube", videoId });
+      setSongOpen(false);
+      setBackingMeta(meta ?? null);
+      // remember the other official uploads so an embed-blocked pick can hop to the next one
+      ytQueueRef.current = alternates ? { videoId, rest: alternates, hops: ytQueueRef.current?.videoId === videoId ? ytQueueRef.current.hops : 0 } : null;
+      setNotice({ kind: "info", text: "Loading YouTube video… press Play when it appears." });
+
+      // auto-match lyrics unless the loaded track already is this song
+      const run = ++autoMatchRef.current;
+      const key = youtubeApiKey();
+      const resolveMeta: Promise<VideoMeta | null> = meta ? Promise.resolve(meta) : key ? fetchVideoMeta(videoId, key) : Promise.resolve(null);
+      void resolveMeta.then(async (m) => {
+        if (run !== autoMatchRef.current) return;
+        if (!m) return;
+        setBackingMeta(m);
+        const pair = ytPairRef.current;
+        if (pair && pair.original.videoId === videoId && !pair.original.meta) setYtPair({ ...pair, original: { ...pair.original, meta: m } });
+        const current = trackRef.current;
+        if (current && current.source !== "demo" && trackMatchesVideo(current.title, current.artist, m)) return;
+        const { query, title } = cleanVideoTitle(m.title, m.channel);
+        try {
+          const hits = await searchLyrics(query || title);
+          if (run !== autoMatchRef.current) return;
+          const best = pickLyricsForVideo(hits, m);
+          if (best) {
+            const t = trackFromHit(best);
+            setTrack(t);
+            engine.seek(0);
+            setNotice({ kind: "info", text: `Lyrics auto-matched: ${best.title} — ${best.artist}. Wrong song? Find song → step 1.` });
+          } else {
+            setNotice({ kind: "error", text: `No timed lyrics found for "${title}". Search them in Find song → step 1, or Time it in Sync Studio.` });
+          }
+        } catch {
+          setNotice({ kind: "error", text: "Couldn't look up lyrics for this video — search them in Find song → step 1." });
+        }
+      });
+    },
+    [engine, leaveSet, setYtPair],
+  );
+
+  /** show the other upload of the pair at the same place in the song, keeping each upload's own lyric offset */
+  const showYtVersion = useCallback(
+    (pair: YtPair, which: "original" | "backing") => {
+      const target = which === "backing" ? pair.backing : pair.original;
+      if (!target) return;
+      const curOffset = trackRef.current?.offset ?? 0;
+      const saved: YtPair = pair.showing === "backing" && pair.backing ? { ...pair, backing: { ...pair.backing, offset: curOffset } } : { ...pair, original: { ...pair.original, offset: curOffset } };
+      autoMatchRef.current++; // the lyrics stay; no auto-match for a swap
+      ytQueueRef.current = null;
+      setYtPair({ ...saved, showing: which, busy: false, resume: { at: Math.max(0, engine.frame.time), play: engine.getSnapshot().playing } });
+      setTrack((t) => ({ ...t, offset: target.offset }));
+      setBackingMeta(target.meta);
+      setSource({ kind: "youtube", videoId: target.videoId });
+      setNotice(
+        which === "backing"
+          ? { kind: "info", text: `Minus one: ${target.meta?.title ?? "karaoke version"}. Words early or late? More → Lyrics timing → Tap to sync.` }
+          : { kind: "info", text: "Back to the original recording with vocals." },
+      );
+    },
+    [engine, setYtPair],
+  );
+  const swapYouTubeVersion = useCallback(() => {
+    const pair = ytPairRef.current;
+    if (!pair || pair.busy) return;
+    if (pair.showing === "backing") return showYtVersion(pair, "original");
+    if (pair.backing) return showYtVersion(pair, "backing");
+    if (pair.searched) {
+      setNotice({ kind: "error", text: "No karaoke version of this song was found on YouTube." });
+      return;
+    }
+    const key = youtubeApiKey();
+    if (!key) return;
+    const t = trackRef.current;
+    const meta = pair.original.meta;
+    const fromVideo = meta ? cleanVideoTitle(meta.title, meta.channel) : null;
+    const title = t && t.source !== "demo" ? t.title : (fromVideo?.title ?? "");
+    const artist = t && t.source !== "demo" ? t.artist : "";
+    if (!title) {
+      setNotice({ kind: "error", text: "Load this song's lyrics first so its karaoke version can be found." });
+      return;
+    }
+    setYtPair({ ...pair, busy: true });
+    searchYouTube(backingQuery(title, artist), key, undefined, 15)
+      .then((hits) => {
+        const now = ytPairRef.current;
+        if (!now || now.original.videoId !== pair.original.videoId) return;
+        const hit = pickBackingVersion(hits, { title, duration: meta?.duration || t?.duration || 0 });
+        if (!hit) {
+          setYtPair({ ...now, busy: false, searched: true });
+          setNotice({ kind: "error", text: `No karaoke version of "${title}" was found on YouTube.` });
+          return;
+        }
+        const withBacking: YtPair = { ...now, searched: true, busy: false, backing: { videoId: hit.videoId, meta: { title: hit.title, channel: hit.channel, duration: hit.duration }, offset: trackRef.current?.offset ?? 0 } };
+        showYtVersion(withBacking, "backing");
+      })
+      .catch((err: unknown) => {
+        const now = ytPairRef.current;
+        if (now) setYtPair({ ...now, busy: false });
+        setNotice({ kind: "error", text: err instanceof Error ? err.message : "Couldn't search YouTube for a karaoke version." });
+      });
+  }, [showYtVersion, setYtPair]);
+
+  const vocals: VocalsState =
+    source.kind === "youtube"
+      ? {
+          mode: ytPair?.showing === "backing" ? "off" : "full",
+          percent: 100,
+          twoStep: true,
+          busy: !!ytPair?.busy,
+          disabledReason: youtubeApiKey() ? null : "YouTube search isn't set up",
+        }
+      : { mode: fileVocalsMode, percent: Math.round(vocalLevel * 100), twoStep: false, busy: false, disabledReason: !vocalsApply ? "Your own files or YouTube" : vocalMono ? MONO_NOTE : null };
+
+  /** embed-blocked (101/150) or missing (100) official upload → try the next candidate, at most MAX_HOPS times */
+  const handleYouTubeError = useCallback(
+    (message: string, code?: number) => {
+      const q = ytQueueRef.current;
+      if ((code === 101 || code === 150 || code === 100) && q && q.rest.length && q.hops < MAX_HOPS) {
+        const [next, ...rest] = q.rest;
+        ytQueueRef.current = { videoId: next.videoId, rest, hops: q.hops + 1 };
+        handleYouTube(next.videoId, next.meta, rest);
+        setNotice({ kind: "info", text: `That upload can't be embedded — trying the next official video (${next.meta.title})…` });
+        return;
+      }
+      setNotice({ kind: "error", text: message });
+    },
+    [handleYouTube],
+  );
+
+  const clearSource = useCallback(() => {
+    leaveSet();
+    setSource({ kind: "none" });
+    setBackingMeta(null);
+    setListenSong(null);
+    ytQueueRef.current = null;
+    autoMatchRef.current++;
+  }, [leaveSet]);
+
+  // ── Listen mode (Shazam-style): the room plays the song, we recognise it and follow ──
+  const startListen = useCallback(() => {
+    leaveSet();
+    graph.ensureContext();
+    graph.resume();
+    autoMatchRef.current++;
+    ytQueueRef.current = null;
+    setBackingMeta(null);
+    setListenSong(null);
+    setSource({ kind: "listen" });
+    setSongOpen(false);
+    setMoreOpen(false);
+    setSyncing(false);
+    // the lyric clock must run for captures to be scheduled; it is re-positioned on the first match
+    engine.play();
+  }, [graph, engine, leaveSet]);
+
+  const stopListen = useCallback(() => {
+    engine.pause();
+    setSource((src) => (src.kind === "listen" ? { kind: "none" } : src));
+    setListenSong(null);
+  }, [engine]);
+
+  const onListenResult = useCallback(
+    async (r: RecognizeOutcome, cap: Capture): Promise<boolean> => {
+      if (!r.ok || !r.match) return false;
+      const m = r.match;
+      const meta: VideoMeta = { title: m.title, channel: m.artist, duration: m.durationMs / 1000 };
+      const posNow = () => positionAtCaptureEnd(m, cap.sampleSeconds) + (performance.now() - cap.captureEnd) / 1000;
+      const current = trackRef.current;
+      const sameSong = !!current && current.source !== "demo" && trackMatchesVideo(current.title, current.artist, meta);
+      setListenSong({ title: m.title, artist: m.artist });
+      if (sameSong) {
+        const drift = posNow() - engine.frame.time;
+        if (Math.abs(drift) >= 1.5) engine.seek(posNow());
+        else if (Math.abs(drift) >= 0.12) engine.nudge(drift);
+        if (!engine.getSnapshot().playing) engine.play();
+        return true;
+      }
+      try {
+        const hits = await searchLyrics(`${m.title} ${m.artist}`.trim());
+        const best = pickLyricsForVideo(hits, meta);
+        if (best) {
+          const t = trackFromHit(best);
+          if (m.durationMs > 0) t.duration = Math.max(t.duration ?? 0, Math.ceil(m.durationMs / 1000));
+          setTrack(t);
+          engine.setDemoDuration(t.duration ?? m.durationMs / 1000);
+          engine.seek(posNow());
+          engine.play();
+          setNotice({ kind: "info", text: `Following: ${m.title} — ${m.artist}` });
+        } else {
+          setNotice({ kind: "error", text: `Recognised "${m.title}" by ${m.artist} — no timed lyrics on LRCLIB for it.` });
+        }
+      } catch {
+        setNotice({ kind: "error", text: `Recognised "${m.title}" — couldn't fetch its lyrics right now.` });
+      }
+      return true;
+    },
+    [engine],
+  );
+
+  const onListenFatal = useCallback(
+    (message: string, status: number) => {
+      if (status === 503) setListenSetup("missing");
+      setNotice({ kind: "error", text: message });
+      stopListen();
+    },
+    [stopListen],
+  );
+
+  const listen = useListener(graph, {
+    enabled: listening && mode === "perform",
+    playing: playback.playing,
+    resyncSeconds: RESYNC_S,
+    onResult: onListenResult,
+    onFatal: onListenFatal,
+  });
+
+  const openSongLyrics = useCallback(() => {
+    setSongFocusLyrics((n) => n + 1);
+    setSongOpen(true);
+  }, []);
+
+  const loadTrack = useCallback(
+    (t: Track, note: string) => {
+      setTrack(t);
+      engine.pause();
+      engine.seek(0);
+      setNotice({ kind: "info", text: note });
+    },
+    [engine],
+  );
+
+  const pickSynced = useCallback(
+    (hit: LyricsSearchHit) => {
+      try {
+        const t = trackFromHit(hit);
+        // a file is waiting for its lyrics in the set: these are them
+        if (pendingSetFile) {
+          addSetEntry(pendingSetFile, t);
+          return;
+        }
+        loadTrack(t, `Loaded "${hit.title}" — ${t.lines.length} timed lines. Now add a backing track.`);
+      } catch (err: unknown) {
+        setNotice({ kind: "error", text: err instanceof Error ? err.message : "Couldn't use those lyrics." });
+      }
+    },
+    [loadTrack, pendingSetFile, addSetEntry],
+  );
+
+  const pickPlain = useCallback((hit: LyricsSearchHit) => {
+    dispatchStudio({ type: "setText", text: studioTextFromHit(hit) });
+    dispatchStudio({ type: "setMeta", title: hit.title, artist: hit.artist });
+    dispatchStudio({ type: "parse" });
+    setSongOpen(false);
+    setMode("studio");
+    setNotice({ kind: "info", text: `"${hit.title}" has no timing yet — add a backing track, then tap it out in Sync Studio.` });
+  }, []);
+
+  const sourceKey = source.kind === "file" ? source.url : source.kind === "youtube" ? source.videoId : "";
+  const startTapSync = useCallback(() => {
+    setMoreOpen(false);
+    setHintDismissedFor(sourceKey);
+    setSyncing(true);
+    if (!engine.getSnapshot().playing) engine.play();
+  }, [engine, sourceKey]);
+
+  const applyTapSync = useCallback(
+    (offset: number) => {
+      setTrack((t) => ({ ...t, offset }));
+      setSyncing(false);
+      setNotice({ kind: "info", text: `Lyrics timing set to ${formatOffset(offset)}. Still off? More → Lyrics timing.` });
+    },
+    [],
+  );
+
+  const handleImportFile = useCallback(
+    (file: File) => {
+      setMoreOpen(false);
+      file
+        .text()
+        .then((text) => {
+          const r = importLyricsText(file.name, text);
+          setTrack(r.track);
+          engine.pause();
+          engine.seek(0);
+          const w = r.warnings.length ? ` · ${r.warnings.join(" ")}` : "";
+          setNotice({ kind: "info", text: `Loaded ${r.track.lines.length} lines from ${file.name}${w}` });
+        })
+        .catch((err: unknown) => {
+          setNotice({ kind: "error", text: err instanceof Error ? err.message : "Could not read that file." });
+        });
+    },
+    [engine],
+  );
+
+  useEffect(() => {
+    if (!notice) return;
+    const id = window.setTimeout(() => setNotice(null), notice.kind === "error" ? 9000 : 5000);
+    return () => window.clearTimeout(id);
+  }, [notice]);
+
+  const applyStudioTrack = useCallback(
+    (t: Track) => {
+      setTrack(t);
+      setPreviewTrack(null);
+      setMode("perform");
+      engine.pause();
+      engine.seek(0);
+      setNotice({ kind: "info", text: `Studio timing applied: ${t.lines.length} lines.` });
+    },
+    [engine],
+  );
+
+  const sectionIdx = session.activeIdx >= 0 ? session.activeIdx : Math.min(shownTrack.lines.length - 1, Math.max(0, session.cursorIdx - 1));
+  const activeSection = session.activeIdx >= 0 || session.cursorIdx > 0 ? shownTrack.lines[sectionIdx]?.section ?? null : null;
+
+  const backingDuration = backingMeta?.duration || (source.kind === "file" ? playback.duration : 0);
+  const demoMismatch = mode === "perform" && source.kind !== "none" && track.source === "demo" && !songOpen;
+  const versionMismatch =
+    mode === "perform" &&
+    !demoMismatch &&
+    source.kind !== "none" &&
+    backingDuration > 0 &&
+    (track.duration ?? 0) > 0 &&
+    Math.abs((track.duration ?? 0) - backingDuration) > VERSION_MISMATCH_S;
+  const toggleVisualizer = () => {
+    const next = !visualizer;
+    setVisualizer(next);
+    if (next) {
+      graph.ensureContext();
+      graph.resume();
+    }
+  };
+
+  return (
+    <div
+      className={`app-root theme-${theme}`}
+      data-theme={theme}
+      data-landscape={String(isLandscape)}
+      data-media={source.kind === "file" ? source.mediaKind : source.kind}
+      data-mode={mode}
+      data-motion={reducedMotion ? "reduced" : "full"}
+      data-chrome={chromeHidden ? "hidden" : "visible"}
+      data-fullscreen={String(fullscreen.active)}
+      data-syncing={String(syncing && mode === "perform")}
+      data-intro={String(introShown)}
+      data-generation={playback.generation}
+      data-testid="app-root"
+    >
+      <Header
+        title={shownTrack.title}
+        artist={media ? `${shownTrack.artist || "—"} · ${media.name}` : source.kind === "youtube" ? `${shownTrack.artist || "—"} · YouTube` : listening ? `${shownTrack.artist || "—"} · Live (listening)` : shownTrack.artist}
+        section={activeSection}
+        fullscreen={fullscreen.active}
+        onToggleFullscreen={fullscreen.toggle}
+      />
+
+      <div className="stage-bg" aria-hidden="true">
+        <div className="stage-grain" />
+        {source.kind === "none" || source.kind === "listen" || (source.kind === "file" && source.mediaKind === "audio") ? (
+          <MosaicBackdrop engine={engine} theme={theme} reducedMotion={reducedMotion} />
+        ) : null}
+        <div className="stage-vignette" />
+        <div className="stage-spotlight stage-spotlight--left" />
+        <div className="stage-spotlight stage-spotlight--right" />
+        <div className="stage-spotlight stage-spotlight--center" />
+      </div>
+
+      {media && (
+        <MediaElement
+          key={media.mediaKind}
+          engine={engine}
+          kind={media.mediaKind}
+          src={media.url}
+          onError={() => setNotice({ kind: "error", text: `Couldn't open ${media.name}. Is the file still there, and is it a format this browser plays?` })}
+        />
+      )}
+      {source.kind === "youtube" && (
+        <YouTubeStage
+          key={source.videoId}
+          engine={engine}
+          videoId={source.videoId}
+          startAt={ytPair?.resume?.at ?? 0}
+          autoplay={ytPair?.resume?.play ?? false}
+          onError={handleYouTubeError}
+          onReady={() => setNotice((prev) => (prev && !prev.text.startsWith("Loading YouTube") ? prev : { kind: "info", text: "YouTube ready — press Play to sing." }))}
+        />
+      )}
+
+      <SpectrumCanvas engine={engine} graph={graph} timeline={timeline} visible={visualizer} reducedMotion={reducedMotion} theme={theme} />
+
+      <h1 className="sr-only">LyricGlow karaoke stage</h1>
+      <main className="lyric-overlay" aria-label="Lyrics stage">
+        <div className="stage-toasts" data-testid="stage-toasts">
+          {demoMismatch && (
+            <div className="lyrics-mismatch" role="status" data-testid="lyrics-mismatch">
+              <span>
+                Showing the <strong>demo lyrics</strong> — they won't match this song.
+              </span>
+              <button type="button" className="dock-btn dock-btn--accent" onClick={openSongLyrics} data-testid="lyrics-mismatch-fix">
+                Find this song's lyrics →
+              </button>
+            </div>
+          )}
+          {versionMismatch && !syncing && hintDismissedFor !== sourceKey && (
+            <button type="button" className="sync-hint" onClick={startTapSync} data-testid="sync-hint">
+              Different version of the song? <strong>Tap to sync →</strong>
+            </button>
+          )}
+          {effectiveKey !== 0 && mode === "perform" && <KeyPill semitones={effectiveKey} />}
+          {listening && mode === "perform" && (
+            <ListenPill status={listen.status} song={listenSong} nextAt={listen.nextAt} message={listen.message} onStop={stopListen} onNow={listen.checkNow} />
+          )}
+          {mic.status === "error" && mic.message && mode === "perform" && (
+            <div className="notice notice--error" role="alert" data-testid="mic-status">
+              {mic.message}
+            </div>
+          )}
+          {notice && (
+            <div
+              className={`notice notice--${notice.kind}`}
+              role={notice.kind === "error" ? "alert" : "status"}
+              data-testid={notice.kind === "error" ? "import-error" : "import-notice"}
+            >
+              {notice.text}
+              <button type="button" className="notice-close" onClick={() => setNotice(null)} aria-label="Dismiss message" data-testid="notice-close">
+                ×
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="cue-slot" data-testid="cue-slot">
+          {introShown && songSet.current && (
+            <IntroCard
+              key={`${songSet.state.index}-${playback.generation}`}
+              title={songSet.current.title}
+              artist={songSet.current.artist}
+              position={songSet.position}
+              keyOffset={effectiveKey || (KEY_ENABLED ? keyOffset : 0)}
+              beatSeconds={timeline.beat}
+              tapToStart={intro.tap}
+              onDone={introDone}
+              onSkip={introDone}
+            />
+          )}
+          <CountIn
+            countIn={introShown || (session.countIn?.lineIdx === 0 && playback.generation === skipCountInGen) ? null : session.countIn}
+            variant={lyricsStyle === "karafun" ? "dots" : "number"}
+          />
+          {!introShown && <SectionCard event={session.sectionEvent} />}
+        </div>
+        {syncing && mode === "perform" && <SyncCard engine={engine} track={track} onApply={applyTapSync} onCancel={() => setSyncing(false)} />}
+
+        <Karaoke
+          engine={engine}
+          timeline={timeline}
+          activeIdx={session.activeIdx}
+          cursorIdx={session.cursorIdx}
+          generation={session.generation}
+          isLandscape={isLandscape}
+          reducedMotion={reducedMotion}
+          style={lyricsStyle}
+          onPeak={onPeak}
+        />
+        {micOn && (
+          <PitchLane
+            engine={engine}
+            timeline={timeline}
+            tracker={tracker}
+            session={sessionObj}
+            activeIdx={session.activeIdx}
+            cursorIdx={session.cursorIdx}
+            reducedMotion={reducedMotion}
+            micLatency={micLatencyMs / 1000}
+          />
+        )}
+      </main>
+      <ParticleLayer enabled={!reducedMotion} theme={theme} fxRef={fxRef} />
+
+      {session.score && mode === "perform" && <ScoreHud score={session.score} />}
+
+      {session.finished && mode === "perform" && gradeReadyKey === session.generation && gradeDismissed !== session.generation && (
+        <GradeScreen
+          title={shownTrack.title}
+          summary={session.summary}
+          micOn={micOn}
+          onSingAgain={singAgain}
+          onClose={() => setGradeDismissed(session.generation)}
+          nextTitle={songSet.state.active && songSet.nextEntry ? songSet.nextEntry.title : undefined}
+          onNext={songSet.state.active && songSet.nextEntry ? nextSong : undefined}
+          onEndSet={songSet.state.active ? endSet : undefined}
+        />
+      )}
+
+
+      <SongPanel
+        open={songOpen}
+        onClose={() => setSongOpen(false)}
+        track={track}
+        source={source}
+        onPickSynced={pickSynced}
+        onPickPlain={pickPlain}
+        onFile={pickFile}
+        onYouTube={handleYouTube}
+        set={{ ...songSet.state, cap: songSet.cap }}
+        pendingSetFile={pendingSetFile}
+        onSetFile={addSetFile}
+        onSetAddPlain={() => pendingSetFile && addSetEntry(pendingSetFile, null)}
+        onSetCancel={() => setPendingSetFile(null)}
+        onSetRemove={songSet.remove}
+        onSetStart={startSet}
+        onClearSource={clearSource}
+        onNudge={nudgeLyrics}
+        backingDuration={backingDuration}
+        backingMeta={backingMeta}
+        focusLyrics={songFocusLyrics > 0}
+        onListen={startListen}
+        listening={listening}
+        listenUnavailable={listenSetup === "missing"}
+      />
+
+      <MoreSheet
+        open={moreOpen && mode === "perform"}
+        onClose={() => setMoreOpen(false)}
+        engine={engine}
+        playback={playback}
+        track={track}
+        onNudge={nudgeLyrics}
+        onStartTapSync={startTapSync}
+        keyControl={keyControl}
+        onKey={(n) => setKeyOffset(Math.max(KEY_MIN, Math.min(KEY_MAX, Math.round(n))))}
+        showVocal={vocalsApply}
+        vocalLevel={vocalLevel}
+        vocalMono={vocalMono}
+        onVocalLevel={setVocalLevel}
+        difficulty={difficulty}
+        onDifficulty={setDifficulty}
+        micLatencyMs={micLatencyMs}
+        onMicLatency={setMicLatencyMs}
+        guideLevel={guideLevel}
+        onGuideLevel={setGuideLevel}
+        demoSound={demoSound}
+        onDemoSound={setDemoSound}
+        theme={theme}
+        onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+        visualizer={visualizer}
+        onToggleVisualizer={toggleVisualizer}
+        lyricsStyle={lyricsStyle}
+        onLyricsStyle={setLyricsStyle}
+        effects={effects}
+        onToggleEffects={() => setEffects((e) => (e === "reduced" ? "auto" : "reduced"))}
+        onMediaFile={pickFile}
+        onLyricsFile={handleImportFile}
+        onOpenStudio={() => {
+          setMoreOpen(false);
+          setSyncing(false);
+          setMode("studio");
+        }}
+      />
+
+      {mode === "studio" ? (
+        <SyncStudio
+          engine={engine}
+          playback={playback}
+          state={studio}
+          dispatch={dispatchStudio}
+          onPreview={setPreviewTrack}
+          onApply={applyStudioTrack}
+          onClose={() => setMode("perform")}
+        />
+      ) : (
+        <ThumbBar
+          engine={engine}
+          playback={playback}
+          mic={mic}
+          onToggleMic={toggleMic}
+          vocals={vocals}
+          onToggleVocals={source.kind === "youtube" ? swapYouTubeVersion : cycleFileVocals}
+          onFindSong={() => setSongOpen(true)}
+          onMore={() => setMoreOpen((o) => !o)}
+          moreOpen={moreOpen}
+        />
+      )}
+    </div>
+  );
+}

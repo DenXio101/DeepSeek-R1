@@ -1,0 +1,9 @@
+# Lens: UX (comprehension persona, BRAINSTORM)
+1. **Blocker** — Six thumb targets don't fit 320 px. → Keep five targets ≥ 44 px: move Restart into the seek row (or long-press Play) and put Vocals in that slot.
+2. **Major** — Vocals is meaningless for YouTube/Listen/demo and mono files. → Define states per source: hide (and let Restart return) or disabled with a visible one-line reason ("Mono file"); state shown by icon + text, not colour; `role="switch"` like MicSwitch; must not shift the other buttons.
+3. **Major** — "Vocals on" is ambiguous vs the 35 % slider default. → Binary toggle over a remembered level (on = last slider level, off = 0); the More slider edits the same state; consistent name ("Singer"/"Vocals") in both places.
+4. **Major** — Key has no home; a slider is wrong for discrete semitones. → Stepper (−, "+2", +, reset), ≥ 44 px buttons, in More next to Speed in a "Key & tempo" group; a small key badge visible on stage / More button; screen-reader values ("Key plus 2 semitones").
+5. **Major** — Queue has no UI. → Short list with move-up/down/remove buttons (not drag), one-step add (file → lyrics → queued), "Song 2 of 3 · next: title" shown on grade screen and intro card, a stated max length with an actionable message.
+6. **Major** — Between-song screens collide (GradeScreen, intro card, CountIn). → With a next song, GradeScreen primary = "Next: <title>" (auto-focused), "Sing again" secondary, "End set" third; intro card skippable by one tap, ≤ 3 s, replaces the first count-in when the song starts at 0; accessible name; YouTube/Listen: card without countdown or no card.
+7. **Major** — Carry-over of key/tempo undefined. → Reset per song by default with a transient "Key reset to 0" cue, or per-item with the key shown on the intro card; any non-default value visible as a badge.
+8. **Nit** — Disabled controls need a text reason; shifter failure → fall back to unshifted audio, toast, key display reset to 0.
