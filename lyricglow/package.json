@@ -18,6 +18,7 @@
     "@capacitor/android": "^8.5.3",
     "@capacitor/core": "^8.5.3",
     "@capacitor/ios": "^8.5.3",
+    "@soundtouchjs/audio-worklet": "2.1.1",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"
   },

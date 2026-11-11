@@ -1,0 +1,229 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Key spike — SoundTouch worklet measurements</title>
+<p>Served by the Vite dev server; driven by <code>scripts/spike/key-spike.mjs</code>.</p>
+<script type="module">
+  import { SoundTouchNode } from "@soundtouchjs/audio-worklet";
+  import processorUrl from "@soundtouchjs/audio-worklet/processor?url";
+
+  const RATE = 44100;
+  const registered = new WeakSet();
+  async function register(ctx) {
+    if (registered.has(ctx)) return;
+    await SoundTouchNode.register(ctx, processorUrl);
+    registered.add(ctx);
+  }
+
+  async function decode(url) {
+    const buf = await (await fetch(url)).arrayBuffer();
+    const off = new OfflineAudioContext(2, RATE, RATE);
+    return off.decodeAudioData(buf);
+  }
+
+  /** peak frequency in [lo, hi] by a 0.05 Hz Goertzel sweep over a mono slice */
+  function peakHz(x, lo, hi) {
+    let best = 0;
+    let bestHz = 0;
+    for (let f = lo; f <= hi; f += 0.05) {
+      const w = (2 * Math.PI * f) / RATE;
+      const c = 2 * Math.cos(w);
+      let s0 = 0, s1 = 0, s2 = 0;
+      for (let i = 0; i < x.length; i++) {
+        s0 = x[i] + c * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+      }
+      const p = s1 * s1 + s2 * s2 - c * s1 * s2;
+      if (p > best) {
+        best = p;
+        bestHz = f;
+      }
+    }
+    return bestHz;
+  }
+  const cents = (hz, ref) => 1200 * Math.log2(hz / ref);
+
+  async function renderOffline(buffer, semis, rate, seconds, wet) {
+    const off = new OfflineAudioContext(2, Math.round(seconds * RATE), RATE);
+    const src = off.createBufferSource();
+    src.buffer = buffer;
+    src.playbackRate.value = rate;
+    if (wet) {
+      await register(off);
+      const node = new SoundTouchNode({ context: off });
+      node.pitchSemitones.value = semis;
+      node.playbackRate.value = rate;
+      src.connect(node);
+      node.connect(off.destination);
+    } else src.connect(off.destination);
+    src.start();
+    const out = await off.startRendering();
+    return out.getChannelData(0);
+  }
+
+  async function offlinePitch(a440, semis, rate) {
+    const y = await renderOffline(a440, semis, rate, 3.5, true);
+    const slice = y.subarray(Math.round(1.2 * RATE), Math.round(3.2 * RATE));
+    const expect = 440 * 2 ** (semis / 12);
+    const hz = peakHz(slice, expect * 0.9, expect * 1.1);
+    return { hz: +hz.toFixed(2), expect: +expect.toFixed(2), cents: +cents(hz, expect).toFixed(1) };
+  }
+
+  /** delay of the shifter from burst onsets: wet onset − dry onset for the bursts at 1.0, 1.5, 2.0 s (source time) */
+  async function offlineLatency(click, semis, rate) {
+    const seconds = 2.2 / rate + 0.6;
+    const dry = await renderOffline(click, semis, rate, seconds, false);
+    const wet = await renderOffline(click, semis, rate, seconds, true);
+    const gap = 0.5 / rate; // wall seconds between bursts at this rate
+    // envelope (1 ms moving average of |x|) so a pitch-shifted burst still correlates with the dry one
+    const envelope = (x) => {
+      const w = 44;
+      const out = new Float32Array(x.length);
+      let acc = 0;
+      for (let i = 0; i < x.length; i++) {
+        acc += Math.abs(x[i]);
+        if (i >= w) acc -= Math.abs(x[i - w]);
+        out[i] = acc / w;
+      }
+      return out;
+    };
+    const ed = envelope(dry), ew = envelope(wet);
+    const ds = [];
+    for (const tSrc of [1.0, 1.5, 2.0]) {
+      const t = tSrc / rate; // wall time of the burst at this rate
+      const a = Math.round((t - 0.005) * RATE);
+      const len = Math.round((0.02 / rate + 0.01) * RATE); // the burst plus a little tail
+      const maxLag = Math.round(Math.min(0.3, gap * 0.9) * RATE);
+      let best = -Infinity, bestLag = 0;
+      for (let lag = 0; lag < maxLag; lag++) {
+        let s = 0;
+        for (let i = 0; i < len; i++) s += ed[a + i] * ew[a + i + lag];
+        if (s > best) {
+          best = s;
+          bestLag = lag;
+        }
+      }
+      ds.push(bestLag / RATE);
+    }
+    const mean = ds.reduce((a, b) => a + b, 0) / ds.length;
+    return { ms: +(mean * 1000).toFixed(1), spreadMs: +((Math.max(...ds) - Math.min(...ds)) * 1000).toFixed(1) };
+  }
+
+  /** live path: <audio> → MediaElementSource → SoundTouchNode → analyser (+ destination), preservesPitch off, rate mirrored */
+  async function livePitch(url, semis, rate, seconds = 2.5) {
+    const ctx = new AudioContext({ sampleRate: RATE });
+    await register(ctx);
+    const el = new Audio(url);
+    el.preservesPitch = false;
+    el.playbackRate = rate;
+    const src = ctx.createMediaElementSource(el);
+    const node = new SoundTouchNode({ context: ctx });
+    node.pitchSemitones.value = semis;
+    node.playbackRate.value = rate;
+    const an = ctx.createAnalyser();
+    an.fftSize = 32768;
+    src.connect(node);
+    node.connect(an);
+    an.connect(ctx.destination);
+    await ctx.resume();
+    await el.play();
+    const t0 = performance.now();
+    let frames = 0, silent = 0;
+    const silentAt = [];
+    const td = new Float32Array(2048);
+    await new Promise((res) => {
+      const tick = () => {
+        an.getFloatTimeDomainData(td);
+        let s = 0;
+        for (let i = 0; i < td.length; i++) s += td[i] * td[i];
+        const since = performance.now() - t0;
+        if (since > 600) {
+          frames++;
+          if (Math.sqrt(s / td.length) < 1e-4) {
+            silent++;
+            if (silentAt.length < 12) silentAt.push(Math.round(since));
+          }
+        }
+        if (performance.now() - t0 < seconds * 1000) requestAnimationFrame(tick);
+        else res();
+      };
+      requestAnimationFrame(tick);
+    });
+    const fd = new Float32Array(an.frequencyBinCount);
+    an.getFloatFrequencyData(fd);
+    const expect = 440 * 2 ** (semis / 12);
+    const binHz = RATE / an.fftSize;
+    let bi = 0;
+    const lo = Math.floor((expect * 0.9) / binHz), hi = Math.ceil((expect * 1.1) / binHz);
+    for (let i = lo; i <= hi; i++) if (fd[i] > fd[bi] || bi < lo) bi = i;
+    // parabolic interpolation on dB magnitudes
+    const a = fd[bi - 1], b = fd[bi], c = fd[bi + 1];
+    const d = (a - c) / (2 * (a - 2 * b + c));
+    const hz = (bi + (Number.isFinite(d) ? d : 0)) * binHz;
+    const played = el.currentTime;
+    el.pause();
+    await ctx.close();
+    return { hz: +hz.toFixed(2), expect: +expect.toFixed(2), cents: +cents(hz, expect).toFixed(1), silentFrames: silent, silentAt, frames, played: +played.toFixed(2), baseLatency: ctx.baseLatency };
+  }
+
+  /** ms from play() to the first audible frame, dry (no node) or through the shifter */
+  async function liveStart(url, wet) {
+    const ctx = new AudioContext({ sampleRate: RATE });
+    const el = new Audio(url);
+    const src = ctx.createMediaElementSource(el);
+    const an = ctx.createAnalyser();
+    an.fftSize = 2048;
+    if (wet) {
+      await register(ctx);
+      const node = new SoundTouchNode({ context: ctx });
+      node.pitchSemitones.value = -2;
+      src.connect(node);
+      node.connect(an);
+    } else src.connect(an);
+    an.connect(ctx.destination);
+    await ctx.resume();
+    const td = new Float32Array(2048);
+    const t0 = performance.now();
+    await el.play();
+    const playResolved = performance.now() - t0;
+    const first = await new Promise((res) => {
+      const tick = () => {
+        an.getFloatTimeDomainData(td);
+        let s = 0;
+        for (let i = 0; i < td.length; i++) s += td[i] * td[i];
+        if (Math.sqrt(s / td.length) > 1e-3) return res(performance.now() - t0);
+        if (performance.now() - t0 > 4000) return res(-1);
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    el.pause();
+    await ctx.close();
+    return { playResolvedMs: Math.round(playResolved), firstSoundMs: Math.round(first) };
+  }
+
+  window.spike = {
+    async latency(urls) {
+      const click = await decode(urls.click);
+      const out = [];
+      for (const rate of [0.5, 0.75, 1, 1.5, 2]) for (const semis of [-2, 0, 2]) out.push({ rate, semis, ...(await offlineLatency(click, semis, rate)) });
+      return out;
+    },
+    async run(urls) {
+      const startDry = await liveStart(urls.a440, false);
+      const startWet = await liveStart(urls.a440, true);
+      const a440 = await decode(urls.a440);
+      const click = await decode(urls.click);
+      const pitchOffline = [], latency = [], pitchLive = [];
+      for (const rate of [0.5, 1, 2]) {
+        for (const semis of [-2, 0, 2]) pitchOffline.push({ rate, semis, ...(await offlinePitch(a440, semis, rate)) });
+        latency.push({ rate, semis: -2, ...(await offlineLatency(click, -2, rate)) });
+        latency.push({ rate, semis: 0, ...(await offlineLatency(click, 0, rate)) });
+      }
+      for (const rate of [0.5, 1, 2]) for (const semis of [-2, 2]) pitchLive.push({ rate, semis, ...(await livePitch(urls.a440, semis, rate)) });
+      const soak = await livePitch(urls.a440, -2, 1, 10);
+      return { processorUrl, pitchOffline, latency, pitchLive, soak, startDry, startWet };
+    },
+  };
+  window.spikeReady = true;
+</script>

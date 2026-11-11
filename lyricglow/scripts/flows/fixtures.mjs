@@ -83,12 +83,13 @@ export function fixtures() {
     }],
     // fake microphone input for Chromium's --use-file-for-fake-audio-capture
     mic220: ["mic220.wav", () => [tone(12, 220, 0.5)]],
-    // key-spike fixtures: a pure A4 and a click train
-    a440: ["a440.wav", () => [tone(4, 440, 0.5), tone(4, 440, 0.5)]],
+    // key-spike fixtures: a pure A4 (12 s) and 20 ms 1 kHz bursts every 0.5 s (onset detection survives the shifter)
+    a440: ["a440.wav", () => [tone(12, 440, 0.5), tone(12, 440, 0.5)]],
     click: ["click.wav", () => {
       const n = Math.round(4 * RATE);
       const out = new Float32Array(n);
-      for (let i = 0; i < n; i += Math.round(0.5 * RATE)) out[i] = 0.9;
+      const burst = Math.round(0.02 * RATE);
+      for (let s = 0; s < n; s += Math.round(0.5 * RATE)) for (let i = 0; i < burst && s + i < n; i++) out[s + i] = sine(1000, i, 0.9);
       return [out, out];
     }],
   };
