@@ -37,6 +37,7 @@ export async function startDevServer(extraEnv = {}) {
     stdio: "ignore",
     detached: true,
   });
+  proc.unref(); // never keep the caller alive; `stop` kills the group
   const stop = () => {
     try {
       process.kill(-proc.pid, "SIGTERM");

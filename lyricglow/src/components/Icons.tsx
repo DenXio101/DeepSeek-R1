@@ -23,6 +23,14 @@ export function IconRestart() {
     </svg>
   );
 }
+/** a singer: head and shoulders with a sound wave */
+export function IconVoice() {
+  return (
+    <svg {...base}>
+      <path d="M10 4a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7zM3 20a7 7 0 0 1 14 0zM17.5 6.5l1.4-1.4a6 6 0 0 1 0 8.5l-1.4-1.4a4 4 0 0 0 0-5.7zM19.6 4.4 21 3a9 9 0 0 1 0 12.7l-1.4-1.4a7 7 0 0 0 0-9.9z" />
+    </svg>
+  );
+}
 export function IconUpload() {
   return (
     <svg {...base}>

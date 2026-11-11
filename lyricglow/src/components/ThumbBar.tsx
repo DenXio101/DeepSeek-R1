@@ -1,24 +1,32 @@
 import type { MicState } from "../engine/AudioGraph";
 import type { PlaybackEngine, PlaybackSnapshot } from "../engine/PlaybackEngine";
-import { IconMore, IconPause, IconPlay, IconRestart, IconSearch } from "./Icons";
+import { IconMore, IconPause, IconPlay, IconSearch } from "./Icons";
 import MicSwitch from "./MicSwitch";
 import ProgressRow from "./ProgressRow";
+import VocalsSwitch from "./VocalsSwitch";
+
+export interface VocalsState {
+  on: boolean;
+  disabledReason: string | null;
+}
 
 interface Props {
   engine: PlaybackEngine;
   playback: PlaybackSnapshot;
   mic: MicState;
   onToggleMic: () => void;
+  vocals: VocalsState;
+  onToggleVocals: () => void;
   onFindSong: () => void;
   onMore: () => void;
   moreOpen: boolean;
 }
 
 /**
- * Bottom bar for thumbs: seek row + five big targets
- * (Find song · Restart · Play/Pause · Mic switch · More). Everything else lives in the More sheet.
+ * Bottom bar for thumbs: seek row (with Restart) + five big targets
+ * (Find song · Vocals switch · Play/Pause · Mic switch · More). Everything else lives in the More sheet.
  */
-export default function ThumbBar({ engine, playback, mic, onToggleMic, onFindSong, onMore, moreOpen }: Props) {
+export default function ThumbBar({ engine, playback, mic, onToggleMic, vocals, onToggleVocals, onFindSong, onMore, moreOpen }: Props) {
   return (
     <div className="thumb-bar" data-testid="thumb-bar">
       <ProgressRow engine={engine} duration={playback.duration} />
@@ -30,12 +38,7 @@ export default function ThumbBar({ engine, playback, mic, onToggleMic, onFindSon
           <span className="thumb-caption">Song</span>
         </div>
 
-        <div className="thumb-item">
-          <button type="button" className="thumb-btn" onClick={() => engine.restart()} aria-label="Restart" data-testid="btn-restart">
-            <IconRestart />
-          </button>
-          <span className="thumb-caption">Restart</span>
-        </div>
+        <VocalsSwitch on={vocals.on} disabledReason={vocals.disabledReason} onToggle={onToggleVocals} />
 
         <div className="thumb-item thumb-item--primary">
           {playback.playing ? (

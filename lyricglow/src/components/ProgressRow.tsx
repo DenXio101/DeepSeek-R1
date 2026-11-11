@@ -2,13 +2,14 @@ import { useRef } from "react";
 import type { PlaybackEngine } from "../engine/PlaybackEngine";
 import { useFrame } from "../engine/useFrame";
 import { formatTime } from "../lyrics";
+import { IconRestart } from "./Icons";
 
 interface Props {
   engine: PlaybackEngine;
   duration: number;
 }
 
-/** Seek bar + time labels, updated imperatively every frame (no React renders). */
+/** Restart (seek to 0 and play) + seek bar + time labels, updated imperatively every frame (no React renders). */
 export default function ProgressRow({ engine, duration }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const labelRef = useRef<HTMLSpanElement>(null);
@@ -28,6 +29,9 @@ export default function ProgressRow({ engine, duration }: Props) {
 
   return (
     <div className="progress-row">
+      <button type="button" className="seek-restart" onClick={() => engine.restart()} aria-label="Restart from the beginning" title="Restart" data-testid="btn-restart">
+        <IconRestart />
+      </button>
       <span className="time-label" ref={labelRef} data-testid="time-current">
         0:00
       </span>

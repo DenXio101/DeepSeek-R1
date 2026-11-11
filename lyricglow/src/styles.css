@@ -364,8 +364,27 @@ a.dock-btn { text-decoration: none; }
 .mic-switch--error .mic-switch-track { border-color: var(--rose); }
 .mic-switch:focus-visible .mic-switch-track { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .mic-switch--on + .thumb-caption { color: var(--rose); }
+/* the Vocals switch shares the oblong switch; gold accent, dimmed when it does not apply */
+.mic-switch--gold.mic-switch--on .mic-switch-track { background: linear-gradient(90deg, rgba(232, 200, 122, 0.3), rgba(232, 200, 122, 0.55)); border-color: var(--gold); box-shadow: 0 0 16px var(--gold-glow); }
+.mic-switch--gold.mic-switch--on .mic-switch-knob { background: var(--gold); color: #2a1e08; box-shadow: 0 0 14px var(--gold-glow), 0 2px 8px rgba(0, 0, 0, 0.45); }
+.mic-switch--gold.mic-switch--on + .thumb-caption { color: var(--gold); }
+.mic-switch:disabled { cursor: not-allowed; }
+.mic-switch:disabled .mic-switch-track { opacity: 0.45; }
+.mic-switch:disabled + .thumb-caption { opacity: 0.6; }
 
 .progress-row { display: flex; align-items: center; gap: 8px; }
+/* Restart lives in the seek row: it is seek-to-zero */
+.seek-restart {
+  width: 44px; height: 44px; border-radius: 50%; flex-shrink: 0; cursor: pointer;
+  background: var(--control-bg); border: 1px solid var(--border); color: var(--text-primary);
+  display: inline-flex; align-items: center; justify-content: center;
+  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+}
+.seek-restart svg { width: 1.25em; height: 1.25em; fill: currentColor; display: block; }
+.seek-restart:hover { background: var(--control-hover); border-color: var(--gold); }
+.seek-restart:active { transform: scale(0.92); }
+.seek-restart:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .time-label { font-size: 0.72rem; font-variant-numeric: tabular-nums; color: var(--text-muted); flex-shrink: 0; width: 34px; text-align: center; }
 
 /* sliders: a 28 px tall hit area around a thin track, 20 px thumbs (WCAG 2.5.8) */
@@ -772,6 +791,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   .stage-toasts { gap: 4px; }
   .notice { font-size: 0.76rem; padding: 5px 32px 5px 10px; }
   .seek-bar { height: 22px; }
+  .seek-restart { width: 40px; height: 40px; }
   .thumb-bar { padding: 4px 16px calc(6px + env(safe-area-inset-bottom, 0px)); gap: 2px; }
   .thumb-btn { width: 44px; height: 44px; }
   .thumb-btn--primary { width: 54px; height: 54px; margin-top: -4px; }

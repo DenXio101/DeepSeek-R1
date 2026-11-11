@@ -8,7 +8,7 @@ import { usePlaybackEngine } from "./engine/usePlaybackEngine";
 import { useKaraokeSession } from "./engine/useKaraokeSession";
 import { useIsLandscape } from "./hooks/useOrientation";
 import Header, { type Theme } from "./components/Header";
-import ThumbBar from "./components/ThumbBar";
+import ThumbBar, { type VocalsState } from "./components/ThumbBar";
 import MoreSheet from "./components/MoreSheet";
 import { SyncCard } from "./components/SyncControl";
 import { formatOffset } from "./model/sync";
@@ -41,7 +41,7 @@ import SectionCard from "./components/SectionCard";
 import { useFullscreen } from "./hooks/useFullscreen";
 import { useIdleHide } from "./hooks/useIdleHide";
 import { useHotkeys } from "./hooks/useHotkeys";
-import { useVocalLevel } from "./hooks/useVocalLevel";
+import { MONO_NOTE, useVocalLevel } from "./hooks/useVocalLevel";
 import type { Point } from "./components/CueBall";
 import type { Voice } from "./lyrics";
 import { importLyricsText } from "./model/trackIO";
@@ -113,6 +113,25 @@ export default function App() {
   const tracker = useMemo(() => new PitchTracker(graph), [graph]);
   const micOn = mic.status === "on";
   const vocalMono = useVocalLevel(engine, graph, media && playback.sourceKind === "media" ? media.url : null, vocalLevel);
+
+  // the Vocals switch (thumb bar) and the Voice slider (More) edit the same level;
+  // the switch remembers the last non-zero level so "on" restores it
+  const lastVocalLevel = useRef(0.35);
+  const setVocalLevelFromSlider = useCallback((v: number) => {
+    if (v > 0) lastVocalLevel.current = v;
+    setVocalLevel(v);
+  }, []);
+  const toggleVocals = useCallback(() => {
+    setVocalLevel((v) => {
+      if (v > 0) {
+        lastVocalLevel.current = v;
+        return 0;
+      }
+      return lastVocalLevel.current || 0.35;
+    });
+  }, []);
+  const vocalsApply = !!media && playback.sourceKind === "media" && graph.supported;
+  const vocals: VocalsState = { on: vocalLevel > 0, disabledReason: !vocalsApply ? "Local files only" : vocalMono ? MONO_NOTE : null };
 
   // mic → pitch tracker → session scoring
   useEffect(() => {
@@ -667,7 +686,7 @@ export default function App() {
         showVocal={!!media && playback.sourceKind === "media" && graph.supported}
         vocalLevel={vocalLevel}
         vocalMono={vocalMono}
-        onVocalLevel={setVocalLevel}
+        onVocalLevel={setVocalLevelFromSlider}
         difficulty={difficulty}
         onDifficulty={setDifficulty}
         micLatencyMs={micLatencyMs}
@@ -709,6 +728,8 @@ export default function App() {
           playback={playback}
           mic={mic}
           onToggleMic={toggleMic}
+          vocals={vocals}
+          onToggleVocals={toggleVocals}
           onFindSong={() => setSongOpen(true)}
           onMore={() => setMoreOpen((o) => !o)}
           moreOpen={moreOpen}

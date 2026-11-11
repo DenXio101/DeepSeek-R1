@@ -1,3 +1,5 @@
+import { MONO_NOTE } from "../hooks/useVocalLevel";
+
 interface Props {
   level: number;
   mono: boolean;
@@ -31,7 +33,7 @@ export default function VocalControl({ level, mono, onLevel }: Props) {
       />
       {mono && (
         <span className="vocal-note" data-testid="vocal-mono-note">
-          mono file — can't separate vocals
+          {MONO_NOTE}
         </span>
       )}
     </div>

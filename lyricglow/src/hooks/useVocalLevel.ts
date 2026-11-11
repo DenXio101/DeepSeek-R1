@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import type { AudioGraph } from "../engine/AudioGraph";
 import type { PlaybackEngine } from "../engine/PlaybackEngine";
 
+/** the one wording for a mono file, used by the Vocals switch and the Voice slider */
+export const MONO_NOTE = "Mono file — can't separate vocals";
+
 /**
  * Keeps the "original singer" level applied to the current local file and watches
  * whether the file is mono (where centre-channel reduction would mute everything).
