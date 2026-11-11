@@ -116,6 +116,10 @@ Decision: one constant `SHIFTER_LATENCY_S = 0.128` (wall seconds, scaled by rate
 | Phase 3 song-set hook, element keyed by kind, engine reset on src swap | `968a4bc` | gate green; 8 flows unchanged (same-kind swap exercised by `verify-file`) |
 | Phase 4 + 5 intro card, set UI, grade screen Next / End set | see git log | gate green; 11 flows incl. `verify-intro` (countdown, first count-in replaced, Skip, Play, no card for single files) and `verify-set` (three songs, cap, remove, Next with focus, key carried over, speed reset, one element, one URL revoked per advance, End set) |
 
+### G3 (owner, 2026-11-11)
+
+"Deploy, Key off" + "Key on for preview builds only". Production deployment `dpl_95iCzzy9JVTw91u3ZkHN9u832iCr` of `d8549af` (flag unset → Key hidden); `VITE_FEATURE_KEY=1` added to the Preview environment (env id `rQ4egks7fJQ7BuHX`) and the branch preview redeployed as `dpl_Gj5auvup8z2zKnxa3pzyjqepcHMv` for the Q1/Q2 phone tests.
+
 ### Deviations from the resolved design (recorded, not hidden)
 
 - **App state**: besides `keyOffset`, `introActive` (as `intro {active, tap}`) and the hook, App also holds `keyState` (the shifter's resolved state), `pendingSetFile` (a file waiting for its lyrics) and `skipCountInGen`. App.tsx grew from 719 to ~945 lines. A follow-up could move the set/intro handlers into `useSongSet` or a `useSetFlow` hook; the behaviour is covered by the flows either way.
