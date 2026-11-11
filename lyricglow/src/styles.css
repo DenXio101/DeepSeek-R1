@@ -368,6 +368,11 @@ a.dock-btn { text-decoration: none; }
 .mic-switch--gold.mic-switch--on .mic-switch-track { background: linear-gradient(90deg, rgba(232, 200, 122, 0.3), rgba(232, 200, 122, 0.55)); border-color: var(--gold); box-shadow: 0 0 16px var(--gold-glow); }
 .mic-switch--gold.mic-switch--on .mic-switch-knob { background: var(--gold); color: #2a1e08; box-shadow: 0 0 14px var(--gold-glow), 0 2px 8px rgba(0, 0, 0, 0.45); }
 .mic-switch--gold.mic-switch--on + .thumb-caption { color: var(--gold); }
+/* middle position = light 30 % guide vocal */
+.mic-switch--mid .mic-switch-track { background: rgba(232, 200, 122, 0.18); border-color: rgba(232, 200, 122, 0.6); }
+.mic-switch--mid .mic-switch-knob { transform: translateX(calc((84px - var(--knob) - 8px) / 2)); background: rgba(232, 200, 122, 0.75); color: #2a1e08; }
+.mic-switch--mid .mic-switch-text { opacity: 0; }
+.mic-switch--mid + .thumb-caption { color: var(--gold); }
 .mic-switch:disabled { cursor: not-allowed; }
 .mic-switch:disabled .mic-switch-track { opacity: 0.45; }
 .mic-switch:disabled + .thumb-caption { opacity: 0.6; }

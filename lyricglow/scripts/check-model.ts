@@ -14,7 +14,8 @@ import { parseYouTubeId, youtubeTransport, type YTPlayer } from "../src/engine/y
 import { trackFromHit, type LyricsSearchHit } from "../src/model/lrclib";
 import { cleanVideoTitle, pickLyricsForVideo, trackMatchesVideo } from "../src/model/songMatch";
 import { TAP_REACTION_S, formatOffset, lineLabel, offsetForTap, upcomingLine } from "../src/model/sync";
-import { classifyUpload, isOfficialKind, officialQuery, rankHits, type YouTubeHit } from "../src/model/youtubeSearch";
+import { backingQuery, classifyUpload, isBackingUpload, isOfficialKind, officialQuery, pickBackingVersion, rankHits, type YouTubeHit } from "../src/model/youtubeSearch";
+import { LIGHT_VOCAL, levelOfMode, nextVocalsMode, vocalsModeOf } from "../src/model/vocals";
 import { positionAtCaptureEnd } from "../src/model/acr";
 import { acrStringToSign, parseAcrResponse } from "../api/recognize";
 import { downsample, encodeWav16, readWavHeader } from "../src/model/wav";
@@ -330,6 +331,28 @@ console.log("\nkey change (transposition accessor, lyric time with output lead, 
   const untransposed = scoreSyllable(target, 19.5, sung, "normal");
   ok(transposed.pitchScore !== null && transposed.pitchScore > 0.95, `key −2: singing the transposed note scores ${transposed.pitchScore?.toFixed(2)}`);
   ok(untransposed.pitchScore !== null && untransposed.pitchScore < 0.5, `without transposition the same singing would score ${untransposed.pitchScore?.toFixed(2)}`);
+}
+
+console.log("\nvocals switch + karaoke version picker");
+{
+  ok(vocalsModeOf(1) === "full" && vocalsModeOf(0.3) === "light" && vocalsModeOf(0) === "off" && vocalsModeOf(0.6) === "custom", "levels map to full / light / off / custom");
+  const order: string[] = [];
+  let m = vocalsModeOf(LIGHT_VOCAL);
+  for (let i = 0; i < 4; i++) {
+    order.push(m);
+    m = nextVocalsMode(m, false);
+  }
+  ok(order.join(">") === "light>off>full>light", `tap order from the default: ${order.join(" → ")}`);
+  ok(nextVocalsMode("custom", false, 60) === "light" && nextVocalsMode("custom", false, 15) === "off", "a custom level drops to the next lower step");
+  ok(nextVocalsMode("full", true) === "off" && nextVocalsMode("off", true) === "full", "YouTube: two steps only");
+  ok(levelOfMode("light") === 0.3 && levelOfMode("full") === 1 && levelOfMode("off") === 0, "step levels 100 / 30 / 0");
+  ok(isBackingUpload("Lantern Song (Karaoke Version)", "Sing King") && isBackingUpload("Lantern Song - Instrumental", "x") && isBackingUpload("Lantern Song minus one", "x"), "karaoke / instrumental / minus one count as backing uploads");
+  ok(!isBackingUpload("Lantern Song (Official Video)", "TestVEVO") && !isBackingUpload("Lantern Song piano karaoke", "x") && !isBackingUpload("Lantern Song karaoke lower key", "x") && !isBackingUpload("Lantern Song karaoke cover", "x"), "official, piano, re-keyed and cover uploads do not");
+  ok(backingQuery("Lantern Song", "Test Artist") === "Lantern Song Test Artist karaoke instrumental", "search text for the karaoke version");
+  const yh = (videoId: string, title: string, duration: number): YouTubeHit => ({ videoId, title, channel: "Sing King", thumbnail: "", duration, kind: "unofficial", official: false });
+  const picks = [yh("a", "Other Tune (Karaoke)", 200), yh("b", "Lantern Song (Karaoke Version)", 260), yh("c", "Lantern Song Karaoke", 203), yh("d", "Lantern Song live karaoke", 200)];
+  ok(pickBackingVersion(picks, { title: "Lantern Song", duration: 200 })?.videoId === "c", "picks the matching title closest in length");
+  ok(pickBackingVersion([picks[0], picks[3]], { title: "Lantern Song", duration: 200 }) === null, "none when nothing fits");
 }
 
 console.log("\nsong set (pure helpers)");

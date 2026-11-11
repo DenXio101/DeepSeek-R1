@@ -3,12 +3,8 @@ import type { PlaybackEngine, PlaybackSnapshot } from "../engine/PlaybackEngine"
 import { IconMore, IconPause, IconPlay, IconSearch } from "./Icons";
 import MicSwitch from "./MicSwitch";
 import ProgressRow from "./ProgressRow";
+import type { VocalsState } from "../model/vocals";
 import VocalsSwitch from "./VocalsSwitch";
-
-export interface VocalsState {
-  on: boolean;
-  disabledReason: string | null;
-}
 
 interface Props {
   engine: PlaybackEngine;
@@ -38,7 +34,7 @@ export default function ThumbBar({ engine, playback, mic, onToggleMic, vocals, o
           <span className="thumb-caption">Song</span>
         </div>
 
-        <VocalsSwitch on={vocals.on} disabledReason={vocals.disabledReason} onToggle={onToggleVocals} />
+        <VocalsSwitch vocals={vocals} onCycle={onToggleVocals} />
 
         <div className="thumb-item thumb-item--primary">
           {playback.playing ? (

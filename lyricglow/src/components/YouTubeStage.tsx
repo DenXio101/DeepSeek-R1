@@ -8,17 +8,21 @@ interface Props {
   /** `code` is the IFrame API error code (2, 5, 100, 101, 150) when the player reported it */
   onError: (message: string, code?: number) => void;
   onReady?: () => void;
+  /** resume position in seconds (a version swap keeps the place in the song) */
+  startAt?: number;
+  /** start playing as soon as the player is ready (the song was playing before the swap) */
+  autoplay?: boolean;
 }
 
 /**
  * Full-stage YouTube player. The player stays visible (YouTube's terms) under
  * the lyric overlay; the engine drives it through a Transport.
  */
-export default function YouTubeStage({ engine, videoId, onError, onReady }: Props) {
+export default function YouTubeStage({ engine, videoId, onError, onReady, startAt = 0, autoplay = false }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const cbRef = useRef({ onError, onReady });
+  const cbRef = useRef({ onError, onReady, startAt, autoplay });
   useEffect(() => {
-    cbRef.current = { onError, onReady };
+    cbRef.current = { onError, onReady, startAt, autoplay };
   });
 
   useEffect(() => {
@@ -52,6 +56,9 @@ export default function YouTubeStage({ engine, videoId, onError, onReady }: Prop
               if (cancelled) return;
               transport = youtubeTransport(e.target);
               engine.attachTransport(transport);
+              const { startAt: at, autoplay: go } = cbRef.current;
+              if (at > 0) engine.seek(at);
+              if (go) engine.play();
               cbRef.current.onReady?.();
             },
             onStateChange: (e) => {

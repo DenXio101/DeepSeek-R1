@@ -18,7 +18,7 @@ await withBrowser({}, async (browser) => {
   ok(e > 0.02, `stage lights follow the file (--energy ${e.toFixed(3)}) — BASELINE`);
   await page.click(tid("btn-more"));
   ok(await exists(page, "vocal-control"), "Voice slider shown for a local file");
-  ok((await page.$eval(tid("vocal-level"), (el) => el.value)) === "35", "Voice slider defaults to 35 %");
+  ok((await page.$eval(tid("vocal-level"), (el) => el.value)) === "30", "Voice slider defaults to 30 %");
   ok(!(await exists(page, "vocal-mono-note")), "no mono note on a stereo file");
   await page.click(tid("more-close"));
   await page.click(tid("btn-pause"));

@@ -3,7 +3,7 @@ import { useModalFocus } from "../hooks/useModalFocus";
 import type { Track } from "../lyrics";
 import { formatDuration, searchLyrics, type LyricsSearchHit } from "../model/lrclib";
 import { parseYouTubeId, youtubeSearchUrl } from "../engine/youtube";
-import { classifyUpload, kindLabel, officialQuery, rankHits, searchYouTube, youtubeApiKey, type YouTubeHit } from "../model/youtubeSearch";
+import { classifyUpload, isBackingUpload, kindLabel, officialQuery, rankHits, searchYouTube, youtubeApiKey, type YouTubeHit } from "../model/youtubeSearch";
 import { fitsDuration, sortHitsForBacking, type VideoMeta } from "../model/songMatch";
 import { IconMic, IconUpload } from "./Icons";
 import type { SetState } from "../hooks/useSongSet";
@@ -277,7 +277,11 @@ export default function SongPanel({ open, onClose, track, source, onPickSynced, 
             {source.kind === "youtube" && (
               <span>
                 YouTube: <strong>{backingMeta?.title || source.videoId}</strong>
-                {sourceKind && kindLabel(sourceKind) && (
+                {backingMeta && isBackingUpload(backingMeta.title, backingMeta.channel) ? (
+                  <span className="yt-kind-badge yt-kind-badge--other" data-testid="song-source-kind" style={{ marginLeft: 8 }}>
+                    Karaoke version
+                  </span>
+                ) : sourceKind && kindLabel(sourceKind) && (
                   <span className={`yt-kind-badge yt-kind-badge--${sourceKind}`} data-testid="song-source-kind" style={{ marginLeft: 8 }}>
                     {kindLabel(sourceKind)}
                   </span>

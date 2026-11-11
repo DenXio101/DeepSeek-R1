@@ -1,6 +1,7 @@
-// Vocals switch on the thumb bar: one tap mutes the original singer, a second restores the last
-// level; disabled on mono files and for non-file sources; Restart lives in the seek row.
-import { ensureServer, exists, fixtures, makeChecker, mediaTime, openApp, setRange, sleep, tid, uploadFile, withBrowser } from "./lib.mjs";
+// Vocals switch on the thumb bar (local files): Light 30 % by default, taps cycle
+// Light → Minus one → Full → Light on the same level the Voice slider edits; disabled on
+// mono files and on the demo; Restart lives in the seek row.
+import { ensureServer, exists, fixtures, makeChecker, mediaTime, openApp, setRange, sleep, text, tid, uploadFile, withBrowser } from "./lib.mjs";
 
 const { ok, done } = makeChecker("verify-vocals");
 const fx = fixtures();
@@ -15,36 +16,38 @@ await withBrowser({}, async (browser) => {
     await sleep(100);
     return v;
   };
+  const tap = async () => {
+    await page.click(tid("vocals-toggle"));
+    await sleep(100);
+  };
 
   ok((await state()) === "unavailable", `demo: switch unavailable (${await state()})`);
-  ok((await page.getAttribute(tid("vocals-toggle"), "aria-label")).includes("Local files only"), "demo: reason is 'Local files only'");
 
   await uploadFile(page, fx.beat);
   await sleep(300);
-  ok((await state()) === "on", "stereo file: switch on");
-  ok((await page.getAttribute(tid("vocals-toggle"), "aria-checked")) === "true", "aria-checked true");
-  await page.click(tid("vocals-toggle"));
-  await sleep(100);
-  ok((await state()) === "off", "tap → off");
-  ok((await level()) === "0", "Voice slider reads 0 after the tap");
-  await page.click(tid("vocals-toggle"));
-  await sleep(100);
-  ok((await state()) === "on", "second tap → on");
-  ok((await level()) === "35", "Voice slider back at 35");
+  ok((await state()) === "light" && (await text(page, "vocals-state")) === "Vocals 30%", `stereo file starts at Light 30% (${await text(page, "vocals-state")})`);
+  ok((await level()) === "30", "Voice slider reads 30");
+  await tap();
+  ok((await state()) === "off" && (await text(page, "vocals-state")) === "Minus one", "tap → Minus one");
+  ok((await level()) === "0", "Voice slider reads 0");
+  await tap();
+  ok((await state()) === "full" && (await text(page, "vocals-state")) === "Vocals", "tap → Full");
+  ok((await level()) === "100", "Voice slider reads 100");
+  await tap();
+  ok((await state()) === "light", "tap → back to Light");
+  ok((await page.getAttribute(tid("vocals-toggle"), "aria-label")).includes("Tap for off"), "label announces the next step");
 
   await page.click(tid("btn-more"));
   await setRange(page, tid("vocal-level"), 60);
   await page.click(tid("more-close"));
   await sleep(100);
-  await page.click(tid("vocals-toggle"));
-  await page.click(tid("vocals-toggle"));
-  ok((await level()) === "60", "switch restores the slider's last level (60)");
+  ok((await state()) === "custom" && (await text(page, "vocals-state")) === "Vocals 60%", "slider level shows as custom 60%");
+  await tap();
+  ok((await state()) === "light", "custom drops to the next lower step (Light)");
 
   const items = await page.$$eval(`${tid("thumb-row")} > *`, (els) => els.map((e) => Math.round((e.querySelector("button") || e).getBoundingClientRect().width)));
   ok(items.length === 5 && items.every((w) => w >= 44), `five thumb targets ≥ 44 px at 320 px (${items.join(", ")})`);
-  const inRow = await page.$(`.progress-row ${tid("btn-restart")}`);
-  ok(!!inRow, "Restart sits in the seek row");
-  ok((await page.$$(tid("btn-restart"))).length === 1, "exactly one Restart control");
+  ok(!!(await page.$(`.progress-row ${tid("btn-restart")}`)) && (await page.$$(tid("btn-restart"))).length === 1, "one Restart, in the seek row");
 
   await page.click(tid("btn-play"));
   await sleep(1800);
@@ -60,14 +63,6 @@ await withBrowser({}, async (browser) => {
   ok((await page.getAttribute(tid("vocals-toggle"), "aria-label")).includes("Mono file"), "mono reason shown");
   await page.click(tid("btn-more"));
   ok(await exists(page, "vocal-mono-note"), "slider shows the same mono note");
-  await page.click(tid("more-close"));
-
-  await page.click(tid("btn-find-song"));
-  await page.fill(tid("youtube-url-input"), "https://www.youtube.com/watch?v=abc123XYZ00");
-  await page.click(tid("youtube-load"));
-  await page.waitForSelector(tid("youtube-stage"), { state: "attached" });
-  await sleep(300);
-  ok((await state()) === "unavailable", "YouTube: switch unavailable");
   await page.context().close();
 });
 done();

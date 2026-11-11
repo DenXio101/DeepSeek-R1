@@ -111,11 +111,19 @@ export const YT_SEARCH = {
     { id: { videoId: "karaokeVd003" }, snippet: { title: "Lantern Song (Karaoke Version)", channelTitle: "Sing King", thumbnails: { medium: { url: "https://i.ytimg.com/vi/karaokeVd003/mqdefault.jpg" } } } },
   ],
 };
+/** what a "… karaoke instrumental" search returns; flows can empty it to test "none found" */
+export const YT_KARAOKE_SEARCH = {
+  items: [
+    { id: { videoId: "coverVid0004" }, snippet: { title: "Lantern Song (Piano Karaoke Cover)", channelTitle: "Keys", thumbnails: {} } },
+    { id: { videoId: "karaokeVd003" }, snippet: { title: "Lantern Song (Karaoke Version)", channelTitle: "Sing King", thumbnails: {} } },
+  ],
+};
 export const YT_VIDEOS = {
   items: [
     { id: "topicVid0001", contentDetails: { duration: "PT3M20S" }, snippet: { title: "Lantern Song", channelTitle: "Test Artist - Topic" } },
     { id: "officialV002", contentDetails: { duration: "PT3M25S" }, snippet: { title: "Test Artist - Lantern Song (Official Video)", channelTitle: "TestArtistVEVO" } },
     { id: "karaokeVd003", contentDetails: { duration: "PT3M20S" }, snippet: { title: "Lantern Song (Karaoke Version)", channelTitle: "Sing King" } },
+    { id: "noKaraoke05", contentDetails: { duration: "PT3M20S" }, snippet: { title: "Second Song", channelTitle: "Test Artist - Topic" } },
     { id: "abc123XYZ00", contentDetails: { duration: "PT3M20S" }, snippet: { title: "Lantern Song", channelTitle: "Test Artist - Topic" } },
   ],
 };
@@ -149,8 +157,14 @@ window.onYouTubeIframeAPIReady?.();
 
 export async function installMocks(page) {
   await page.route(/lrclib\.net\/api\/search/, (route) => route.fulfill({ json: LRCLIB_HITS }));
-  await page.route(/googleapis\.com\/youtube\/v3\/search/, (route) => route.fulfill({ json: YT_SEARCH }));
-  await page.route(/googleapis\.com\/youtube\/v3\/videos/, (route) => route.fulfill({ json: YT_VIDEOS }));
+  await page.route(/googleapis\.com\/youtube\/v3\/search/, (route) => {
+    const q = new URL(route.request().url()).searchParams.get("q") ?? "";
+    return route.fulfill({ json: /karaoke instrumental/.test(q) ? (/Second Song/.test(q) ? { items: [] } : YT_KARAOKE_SEARCH) : YT_SEARCH });
+  });
+  await page.route(/googleapis\.com\/youtube\/v3\/videos/, (route) => {
+    const ids = (new URL(route.request().url()).searchParams.get("id") ?? "").split(",");
+    return route.fulfill({ json: { items: YT_VIDEOS.items.filter((v) => ids.includes(v.id)) } });
+  });
   await page.route(/youtube\.com\/iframe_api/, (route) => route.fulfill({ contentType: "text/javascript", body: FAKE_YT }));
   await page.route(/i\.ytimg\.com/, (route) => route.fulfill({ status: 404, body: "" }));
   await page.route(/\/api\/recognize/, (route) => route.fulfill({ status: 503, json: { ok: false, error: "Listen mode is not configured." } }));

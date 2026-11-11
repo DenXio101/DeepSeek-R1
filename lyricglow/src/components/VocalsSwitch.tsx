@@ -1,33 +1,36 @@
+import { nextVocalsMode, type VocalsMode, type VocalsState } from "../model/vocals";
 import { IconVoice } from "./Icons";
 
 interface Props {
-  /** original singer audible (vocal level > 0) */
-  on: boolean;
-  /** why the switch cannot be used right now (mono file, not a local file); null = usable */
-  disabledReason: string | null;
-  onToggle: () => void;
+  vocals: VocalsState;
+  onCycle: () => void;
 }
 
+const NAME: Record<VocalsMode, string> = { full: "full", light: "light, 30 percent", off: "off (minus one)", custom: "custom level" };
+
 /**
- * Oblong switch for the original singer's voice (KaraFun's "Vocals" button). It is a
- * view onto the same vocal level the Voice slider under More edits: off = 0, on = the
- * last non-zero level. Same markup and styling as the mic switch, gold instead of rose.
+ * Three-position oblong switch for the original singer (KaraFun's "Vocals" button):
+ * knob right = full, middle = light 30 %, left = minus one. For local files it steps the
+ * same level the Voice slider under More edits; for YouTube it swaps between the official
+ * video and a karaoke upload. Same shell as the mic switch, gold instead of rose.
  */
-export default function VocalsSwitch({ on, disabledReason, onToggle }: Props) {
+export default function VocalsSwitch({ vocals, onCycle }: Props) {
+  const { mode, percent, twoStep, busy, disabledReason } = vocals;
   const disabled = disabledReason !== null;
-  const state = disabled ? "unavailable" : on ? "on" : "off";
-  const checked = !disabled && on;
+  const state = disabled ? "unavailable" : mode;
+  const pos = disabled || mode === "off" ? "" : mode === "full" ? "mic-switch--on" : "mic-switch--mid";
+  const caption = disabled ? "Vocals —" : busy ? "Finding…" : mode === "full" ? "Vocals" : mode === "light" ? "Vocals 30%" : mode === "off" ? "Minus one" : `Vocals ${percent}%`;
+  const next = nextVocalsMode(mode, twoStep, percent);
   return (
     <div className="mic-switch-wrap">
       <button
         type="button"
-        role="switch"
-        aria-checked={checked}
         disabled={disabled}
-        aria-label={disabled ? `Original vocals — ${disabledReason}` : on ? "Turn the original singer's voice off" : "Turn the original singer's voice on"}
-        title={disabled ? disabledReason : "Original singer's voice on or off (fine level under More → Voice)"}
-        className={`mic-switch mic-switch--gold ${checked ? "mic-switch--on" : ""}`}
-        onClick={onToggle}
+        aria-busy={busy || undefined}
+        aria-label={disabled ? `Original vocals — ${disabledReason}` : `Original vocals: ${NAME[mode]}. Tap for ${NAME[next]}.`}
+        title={disabled ? disabledReason : twoStep ? "Swap between the official video and a karaoke (minus one) version" : "Original singer: full → light 30% → minus one"}
+        className={`mic-switch mic-switch--gold ${pos} ${busy ? "mic-switch--busy" : ""}`}
+        onClick={onCycle}
         data-testid="vocals-toggle"
         data-state={state}
       >
@@ -40,7 +43,7 @@ export default function VocalsSwitch({ on, disabledReason, onToggle }: Props) {
         </span>
       </button>
       <span className="thumb-caption" data-testid="vocals-state" data-value={state}>
-        {state === "off" ? "Vocals off" : state === "unavailable" ? "Vocals —" : "Vocals"}
+        {caption}
       </span>
     </div>
   );

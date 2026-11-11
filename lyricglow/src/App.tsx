@@ -11,7 +11,8 @@ import { usePlaybackEngine } from "./engine/usePlaybackEngine";
 import { useKaraokeSession } from "./engine/useKaraokeSession";
 import { useIsLandscape } from "./hooks/useOrientation";
 import Header, { type Theme } from "./components/Header";
-import ThumbBar, { type VocalsState } from "./components/ThumbBar";
+import ThumbBar from "./components/ThumbBar";
+import { LIGHT_VOCAL, levelOfMode, nextVocalsMode, vocalsModeOf, type VocalsState } from "./model/vocals";
 import MoreSheet, { type KeyControl } from "./components/MoreSheet";
 import KeyPill from "./components/KeyPill";
 import { KEY_ENABLED } from "./featureFlags";
@@ -25,7 +26,7 @@ import SongPanel, { type BackingSource, type YouTubeCandidate } from "./componen
 import MosaicBackdrop from "./components/MosaicBackdrop";
 import { searchLyrics, studioTextFromHit, trackFromHit, type LyricsSearchHit } from "./model/lrclib";
 import { cleanVideoTitle, pickLyricsForVideo, trackMatchesVideo, type VideoMeta } from "./model/songMatch";
-import { fetchVideoMeta, youtubeApiKey } from "./model/youtubeSearch";
+import { backingQuery, fetchVideoMeta, pickBackingVersion, searchYouTube, youtubeApiKey } from "./model/youtubeSearch";
 import SyncStudio from "./components/SyncStudio/SyncStudio";
 import { initStudio, studioReducer } from "./components/SyncStudio/studioReducer";
 import SpectrumCanvas from "./components/SpectrumCanvas";
@@ -69,6 +70,23 @@ function primeMediaElement(el: HTMLMediaElement | null): void {
     });
 }
 
+interface YtVersion {
+  videoId: string;
+  meta: VideoMeta | null;
+  /** lyric-timing offset remembered for this upload (karaoke versions rarely start at the same moment) */
+  offset: number;
+}
+/** the official video and, once looked up, a karaoke upload of the same song */
+interface YtPair {
+  original: YtVersion;
+  backing: YtVersion | null;
+  showing: "original" | "backing";
+  searched: boolean;
+  busy: boolean;
+  /** where to resume after a swap */
+  resume: { at: number; play: boolean } | null;
+}
+
 /** lyrics and backing track lengths this far apart usually mean a different version → offer Tap to sync */
 const VERSION_MISMATCH_S = 3;
 /** how many embed-blocked official uploads to skip past automatically */
@@ -102,7 +120,7 @@ export default function App() {
   const [micLatencyMs, setMicLatencyMs] = useState(60);
   const [demoSound, setDemoSound] = useState(true);
   const [guideLevel, setGuideLevel] = useState(0.25);
-  const [vocalLevel, setVocalLevel] = useState(0.35);
+  const [vocalLevel, setVocalLevel] = useState(LIGHT_VOCAL);
   const iosHintShown = useRef(false);
   const [gradeDismissed, setGradeDismissed] = useState(-1);
   const fxRef = useRef<StageFx | null>(null);
@@ -138,22 +156,11 @@ export default function App() {
 
   // the Vocals switch (thumb bar) and the Voice slider (More) edit the same level;
   // the switch remembers the last non-zero level so "on" restores it
-  const lastVocalLevel = useRef(0.35);
-  const setVocalLevelFromSlider = useCallback((v: number) => {
-    if (v > 0) lastVocalLevel.current = v;
-    setVocalLevel(v);
-  }, []);
-  const toggleVocals = useCallback(() => {
-    setVocalLevel((v) => {
-      if (v > 0) {
-        lastVocalLevel.current = v;
-        return 0;
-      }
-      return lastVocalLevel.current || 0.35;
-    });
+  const fileVocalsMode = vocalsModeOf(vocalLevel);
+  const cycleFileVocals = useCallback(() => {
+    setVocalLevel((v) => levelOfMode(nextVocalsMode(vocalsModeOf(v), false, Math.round(v * 100))));
   }, []);
   const vocalsApply = !!media && playback.sourceKind === "media" && graph.supported;
-  const vocals: VocalsState = { on: vocalLevel > 0, disabledReason: !vocalsApply ? "Local files only" : vocalMono ? MONO_NOTE : null };
 
   // ── key change: session state beside the vocal level; the shifter is in the graph only at key ≠ 0 ──
   const [keyOffset, setKeyOffset] = useState(0);
@@ -432,9 +439,18 @@ export default function App() {
     [songSet],
   );
 
+  // ── YouTube "minus one": swap between the official video and a karaoke upload ──
+  const [ytPair, setYtPairState] = useState<YtPair | null>(null);
+  const ytPairRef = useRef<YtPair | null>(null);
+  const setYtPair = useCallback((p: YtPair | null) => {
+    ytPairRef.current = p;
+    setYtPairState(p);
+  }, []);
+
   const handleYouTube = useCallback(
     (videoId: string, meta?: VideoMeta, alternates?: YouTubeCandidate[]) => {
       leaveSet();
+      setYtPair({ original: { videoId, meta: meta ?? null, offset: 0 }, backing: null, showing: "original", searched: false, busy: false, resume: null });
       setSource({ kind: "youtube", videoId });
       setSongOpen(false);
       setBackingMeta(meta ?? null);
@@ -450,6 +466,8 @@ export default function App() {
         if (run !== autoMatchRef.current) return;
         if (!m) return;
         setBackingMeta(m);
+        const pair = ytPairRef.current;
+        if (pair && pair.original.videoId === videoId && !pair.original.meta) setYtPair({ ...pair, original: { ...pair.original, meta: m } });
         const current = trackRef.current;
         if (current && current.source !== "demo" && trackMatchesVideo(current.title, current.artist, m)) return;
         const { query, title } = cleanVideoTitle(m.title, m.channel);
@@ -470,8 +488,81 @@ export default function App() {
         }
       });
     },
-    [engine, leaveSet],
+    [engine, leaveSet, setYtPair],
   );
+
+  /** show the other upload of the pair at the same place in the song, keeping each upload's own lyric offset */
+  const showYtVersion = useCallback(
+    (pair: YtPair, which: "original" | "backing") => {
+      const target = which === "backing" ? pair.backing : pair.original;
+      if (!target) return;
+      const curOffset = trackRef.current?.offset ?? 0;
+      const saved: YtPair = pair.showing === "backing" && pair.backing ? { ...pair, backing: { ...pair.backing, offset: curOffset } } : { ...pair, original: { ...pair.original, offset: curOffset } };
+      autoMatchRef.current++; // the lyrics stay; no auto-match for a swap
+      ytQueueRef.current = null;
+      setYtPair({ ...saved, showing: which, busy: false, resume: { at: Math.max(0, engine.frame.time), play: engine.getSnapshot().playing } });
+      setTrack((t) => ({ ...t, offset: target.offset }));
+      setBackingMeta(target.meta);
+      setSource({ kind: "youtube", videoId: target.videoId });
+      setNotice(
+        which === "backing"
+          ? { kind: "info", text: `Minus one: ${target.meta?.title ?? "karaoke version"}. Words early or late? More → Lyrics timing → Tap to sync.` }
+          : { kind: "info", text: "Back to the original recording with vocals." },
+      );
+    },
+    [engine, setYtPair],
+  );
+  const swapYouTubeVersion = useCallback(() => {
+    const pair = ytPairRef.current;
+    if (!pair || pair.busy) return;
+    if (pair.showing === "backing") return showYtVersion(pair, "original");
+    if (pair.backing) return showYtVersion(pair, "backing");
+    if (pair.searched) {
+      setNotice({ kind: "error", text: "No karaoke version of this song was found on YouTube." });
+      return;
+    }
+    const key = youtubeApiKey();
+    if (!key) return;
+    const t = trackRef.current;
+    const meta = pair.original.meta;
+    const fromVideo = meta ? cleanVideoTitle(meta.title, meta.channel) : null;
+    const title = t && t.source !== "demo" ? t.title : (fromVideo?.title ?? "");
+    const artist = t && t.source !== "demo" ? t.artist : "";
+    if (!title) {
+      setNotice({ kind: "error", text: "Load this song's lyrics first so its karaoke version can be found." });
+      return;
+    }
+    setYtPair({ ...pair, busy: true });
+    searchYouTube(backingQuery(title, artist), key, undefined, 15)
+      .then((hits) => {
+        const now = ytPairRef.current;
+        if (!now || now.original.videoId !== pair.original.videoId) return;
+        const hit = pickBackingVersion(hits, { title, duration: meta?.duration || t?.duration || 0 });
+        if (!hit) {
+          setYtPair({ ...now, busy: false, searched: true });
+          setNotice({ kind: "error", text: `No karaoke version of "${title}" was found on YouTube.` });
+          return;
+        }
+        const withBacking: YtPair = { ...now, searched: true, busy: false, backing: { videoId: hit.videoId, meta: { title: hit.title, channel: hit.channel, duration: hit.duration }, offset: trackRef.current?.offset ?? 0 } };
+        showYtVersion(withBacking, "backing");
+      })
+      .catch((err: unknown) => {
+        const now = ytPairRef.current;
+        if (now) setYtPair({ ...now, busy: false });
+        setNotice({ kind: "error", text: err instanceof Error ? err.message : "Couldn't search YouTube for a karaoke version." });
+      });
+  }, [showYtVersion, setYtPair]);
+
+  const vocals: VocalsState =
+    source.kind === "youtube"
+      ? {
+          mode: ytPair?.showing === "backing" ? "off" : "full",
+          percent: 100,
+          twoStep: true,
+          busy: !!ytPair?.busy,
+          disabledReason: youtubeApiKey() ? null : "YouTube search isn't set up",
+        }
+      : { mode: fileVocalsMode, percent: Math.round(vocalLevel * 100), twoStep: false, busy: false, disabledReason: !vocalsApply ? "Your own files or YouTube" : vocalMono ? MONO_NOTE : null };
 
   /** embed-blocked (101/150) or missing (100) official upload → try the next candidate, at most MAX_HOPS times */
   const handleYouTubeError = useCallback(
@@ -741,6 +832,8 @@ export default function App() {
           key={source.videoId}
           engine={engine}
           videoId={source.videoId}
+          startAt={ytPair?.resume?.at ?? 0}
+          autoplay={ytPair?.resume?.play ?? false}
           onError={handleYouTubeError}
           onReady={() => setNotice((prev) => (prev && !prev.text.startsWith("Loading YouTube") ? prev : { kind: "info", text: "YouTube ready — press Play to sing." }))}
         />
@@ -892,7 +985,7 @@ export default function App() {
         showVocal={vocalsApply}
         vocalLevel={vocalLevel}
         vocalMono={vocalMono}
-        onVocalLevel={setVocalLevelFromSlider}
+        onVocalLevel={setVocalLevel}
         difficulty={difficulty}
         onDifficulty={setDifficulty}
         micLatencyMs={micLatencyMs}
@@ -935,7 +1028,7 @@ export default function App() {
           mic={mic}
           onToggleMic={toggleMic}
           vocals={vocals}
-          onToggleVocals={toggleVocals}
+          onToggleVocals={source.kind === "youtube" ? swapYouTubeVersion : cycleFileVocals}
           onFindSong={() => setSongOpen(true)}
           onMore={() => setMoreOpen((o) => !o)}
           moreOpen={moreOpen}

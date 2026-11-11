@@ -82,6 +82,32 @@ export function officialQuery(title: string, artist = ""): string {
   return `${title} ${a}`.trim();
 }
 
+// ── karaoke / instrumental ("minus one") versions ───────────────────────────
+const BACKING_RE = /\b(karaoke|instrumental|minus\s*one|backing\s*track|off\s*vocal|no\s*vocals?)\b/i;
+/** different arrangements, keys or edits: not a drop-in replacement for the record */
+const BACKING_EXCLUDE_RE =
+  /\b(cover|live|remix|sped\s*up|slowed|nightcore|reaction|8d|1\s*hour|loop(?:ed)?|mashup|piano|guitar|acoustic|tutorial|lesson|(?:lower|higher|female|male)\s*key)\b/i;
+
+/** search text for a karaoke / instrumental upload of a song */
+export function backingQuery(title: string, artist = ""): string {
+  return `${officialQuery(title, artist)} karaoke instrumental`;
+}
+
+/** an upload of the song without the lead vocal (karaoke, instrumental, minus one) in the original arrangement */
+export function isBackingUpload(title: string, channel = ""): boolean {
+  if (BACKING_EXCLUDE_RE.test(title)) return false;
+  return BACKING_RE.test(title) || /karaoke|instrumental/i.test(channel);
+}
+
+/** the backing upload that matches the song title and is closest in length to the original; null when none */
+export function pickBackingVersion(hits: YouTubeHit[], song: { title: string; duration?: number }): YouTubeHit | null {
+  const dur = song.duration ?? 0;
+  const penalty = (h: YouTubeHit) => (dur && h.duration ? Math.abs(h.duration - dur) : 45);
+  const ok = hits.filter((h) => isBackingUpload(h.title, h.channel) && overlap(song.title, h.title) >= 0.6);
+  if (!ok.length) return null;
+  return [...ok].sort((a, b) => penalty(a) - penalty(b) || overlap(song.title, b.title) - overlap(song.title, a.title))[0];
+}
+
 export function youtubeApiKey(): string | null {
   const k = (import.meta.env.VITE_YT_API_KEY as string | undefined)?.trim();
   return k ? k : null;
